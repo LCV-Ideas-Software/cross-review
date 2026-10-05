@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import lockfile from "proper-lockfile";
 
 import { loadConfig } from "../src/core/config.js";
 import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
@@ -132,7 +133,252 @@ function persistDeadInFlightOwner(orchestrator: CrossReviewOrchestrator, session
   fs.writeFileSync(orchestrator.store.metaPath(sessionId), JSON.stringify(meta), "utf8");
 }
 
+function syntheticReleaseError(code: string, lockfilePath: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`Synthetic native rmdir ${code}`), {
+    code,
+    path: lockfilePath,
+    syscall: "rmdir",
+  });
+}
+
+async function withInjectedSessionLockRmdir(
+  lockfilePath: string,
+  injection: (attempt: number) => NodeJS.ErrnoException | undefined,
+  run: () => Promise<void>,
+): Promise<number> {
+  const nativeRmdir = fs.rmdir;
+  let attempts = 0;
+  fs.rmdir = ((directory: fs.PathLike, callback: fs.NoParamCallback): void => {
+    if (directory === lockfilePath) {
+      const error = injection(++attempts);
+      if (error) {
+        queueMicrotask(() => callback(error));
+        return;
+      }
+    }
+    nativeRmdir(directory, callback);
+  }) as typeof fs.rmdir;
+  try {
+    await run();
+    return attempts;
+  } finally {
+    fs.rmdir = nativeRmdir;
+  }
+}
+
+function transientLockReleaseRegression(code: string): Regression {
+  return {
+    name: `a transient native Windows release ${code} is retried before mutation success`,
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(regressionConfig(`lock-transient-${code}`));
+      const session = await orchestrator.store.init("Synthetic lock release fixture", "codex", []);
+      const lockfilePath = path.join(orchestrator.store.sessionDir(session.session_id), ".lock");
+      const attempts = await withInjectedSessionLockRmdir(
+        lockfilePath,
+        (attempt) => (attempt === 1 ? syntheticReleaseError(code, lockfilePath) : undefined),
+        async () => {
+          const result = await orchestrator.store.markBudgetWarningEmitted(session.session_id);
+          assert.equal(result.budget_warning_emitted, true);
+        },
+      );
+      assert.equal(attempts, 2);
+      assert.equal(fs.existsSync(lockfilePath), false, "success must release the native lock");
+      await orchestrator.store.recordPreflightCheck(session.session_id, {
+        gate: "evidence",
+        phase: "next-native-lock",
+        pass: true,
+        details: {},
+      });
+      assert.equal(orchestrator.store.read(session.session_id).preflight_checks?.length, 1);
+      assert.equal(fs.existsSync(lockfilePath), false);
+    },
+  };
+}
+
+function persistentLockReleaseRegression(code: string): Regression {
+  return {
+    name: `a persistent native release ${code} rejects and preserves committed session bytes`,
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(regressionConfig(`lock-persistent-${code}`));
+      const session = await orchestrator.store.init(
+        "Synthetic failed release fixture",
+        "codex",
+        [],
+      );
+      const lockfilePath = path.join(orchestrator.store.sessionDir(session.session_id), ".lock");
+      const attempts = await withInjectedSessionLockRmdir(
+        lockfilePath,
+        () => syntheticReleaseError(code, lockfilePath),
+        async () => {
+          await assert.rejects(
+            orchestrator.store.markBudgetWarningEmitted(session.session_id),
+            (error: unknown) => {
+              assert.ok(error instanceof Error);
+              const detail = error as NodeJS.ErrnoException;
+              assert.equal(detail.code, code);
+              assert.equal(detail.path, lockfilePath);
+              assert.equal(
+                (error as Error & { file?: string }).file,
+                orchestrator.store.metaPath(session.session_id),
+              );
+              assert.match(error.message, /session_lock_release_failed/);
+              assert.equal((error.cause as NodeJS.ErrnoException).code, code);
+              return true;
+            },
+          );
+        },
+      );
+      assert.equal(attempts, code !== "EIO" && process.platform === "win32" ? 5 : 1);
+      assert.equal(fs.lstatSync(lockfilePath).isDirectory(), true);
+      assert.equal(
+        orchestrator.store.read(session.session_id).budget_warning_emitted,
+        true,
+        "a release failure must preserve the already-committed mutation while rejecting success",
+      );
+    },
+  };
+}
+
 const regressions: Regression[] = [
+  ...(process.platform === "win32"
+    ? ["EACCES", "EPERM", "EBUSY"].map(transientLockReleaseRegression)
+    : []),
+  ...["EACCES", "EPERM", "EBUSY", "EIO"].map(persistentLockReleaseRegression),
+  ...(process.platform === "win32"
+    ? [
+        {
+          name: "a replaced native release directory is refused without deleting either identity",
+          run: async () => {
+            const orchestrator = new CrossReviewOrchestrator(
+              regressionConfig("lock-release-replaced"),
+            );
+            const session = await orchestrator.store.init(
+              "Synthetic replaced lock fixture",
+              "codex",
+              [],
+            );
+            const lockfilePath = path.join(
+              orchestrator.store.sessionDir(session.session_id),
+              ".lock",
+            );
+            const originalDirectory = `${lockfilePath}-original`;
+            const attempts = await withInjectedSessionLockRmdir(
+              lockfilePath,
+              () => {
+                fs.renameSync(lockfilePath, originalDirectory);
+                fs.mkdirSync(lockfilePath);
+                return syntheticReleaseError("EPERM", lockfilePath);
+              },
+              async () => {
+                await assert.rejects(
+                  orchestrator.store.markBudgetWarningEmitted(session.session_id),
+                  (error: unknown) => {
+                    assert.ok(error instanceof Error);
+                    assert.equal((error as NodeJS.ErrnoException).code, "ELOCKRELEASEIDENTITY");
+                    assert.match(error.message, /session_lock_release_failed.*replaced/);
+                    return true;
+                  },
+                );
+              },
+            );
+            assert.equal(attempts, 1, "the replacement must be rejected before another rmdir");
+            assert.equal(fs.lstatSync(lockfilePath).isDirectory(), true);
+            assert.equal(fs.lstatSync(originalDirectory).isDirectory(), true);
+          },
+        },
+      ]
+    : []),
+  {
+    name: "native release ownership errors are surfaced without a second release attempt",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(regressionConfig("native-lock-owner-lost"));
+      const session = await orchestrator.store.init("Native ownership error fixture", "codex", []);
+      const lockfilePath = path.join(orchestrator.store.sessionDir(session.session_id), ".lock");
+      const protectedStore = orchestrator.store as unknown as {
+        withSessionLock<T>(sessionId: string, fn: () => T | Promise<T>): Promise<T>;
+      };
+      await assert.rejects(
+        protectedStore.withSessionLock(session.session_id, async () => {
+          await lockfile.unlock(orchestrator.store.metaPath(session.session_id), {
+            realpath: false,
+            lockfilePath,
+          });
+          return "must not report success after native ownership was lost";
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.equal((error as NodeJS.ErrnoException).code, "ERELEASED");
+          assert.match(error.message, /session_lock_release_failed/);
+          assert.equal((error.cause as NodeJS.ErrnoException).code, "ERELEASED");
+          return true;
+        },
+      );
+      assert.equal(fs.existsSync(lockfilePath), false);
+    },
+  },
+  {
+    name: "a mutation error and persistent release error retain both original causes",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(regressionConfig("native-lock-two-errors"));
+      const session = await orchestrator.store.init("Native dual failure fixture", "codex", []);
+      const lockfilePath = path.join(orchestrator.store.sessionDir(session.session_id), ".lock");
+      const originalError = new Error("Synthetic rejected operation");
+      const protectedStore = orchestrator.store as unknown as {
+        withSessionLock<T>(sessionId: string, fn: () => T | Promise<T>): Promise<T>;
+      };
+      const attempts = await withInjectedSessionLockRmdir(
+        lockfilePath,
+        () => syntheticReleaseError("EIO", lockfilePath),
+        async () => {
+          await assert.rejects(
+            protectedStore.withSessionLock(session.session_id, () => {
+              throw originalError;
+            }),
+            (error: unknown) => {
+              assert.ok(error instanceof AggregateError);
+              assert.equal(error.errors[0], originalError);
+              assert.equal((error.errors[1] as NodeJS.ErrnoException).code, "EIO");
+              assert.equal(error.cause, error.errors[1]);
+              assert.match(error.message, /operation_failed: Synthetic rejected operation/);
+              return true;
+            },
+          );
+        },
+      );
+      assert.equal(attempts, 1);
+      assert.equal(fs.lstatSync(lockfilePath).isDirectory(), true);
+    },
+  },
+  {
+    name: "normal concurrent native session locks serialize every durable mutation",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(regressionConfig("native-lock-concurrent"));
+      const session = await orchestrator.store.init("Concurrent native lock fixture", "codex", []);
+      const phases = Array.from({ length: 12 }, (_, index) => `native-concurrent-${index}`);
+      await Promise.all(
+        phases.map((phase) =>
+          orchestrator.store.recordPreflightCheck(session.session_id, {
+            gate: "evidence",
+            phase,
+            pass: true,
+            details: {},
+          }),
+        ),
+      );
+      assert.deepEqual(
+        orchestrator.store
+          .read(session.session_id)
+          .preflight_checks?.map((check) => check.phase)
+          .sort(),
+        phases.sort(),
+        "every serialized write must survive without a lost update",
+      );
+      assert.equal(
+        fs.existsSync(path.join(orchestrator.store.sessionDir(session.session_id), ".lock")),
+        false,
+      );
+    },
+  },
   ...(["truthfulness", "evidence"] as const).flatMap((kind): Regression[] => [
     {
       name: `${kind} preflight persists the exact round-0 draft before returning`,

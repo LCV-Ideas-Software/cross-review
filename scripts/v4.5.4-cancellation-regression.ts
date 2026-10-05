@@ -3,17 +3,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/core/config.js";
+import { checkConvergence } from "../src/core/convergence.js";
 import { CrossReviewOrchestrator } from "../src/core/orchestrator.js";
 import { sessionCostBreakdown } from "../src/core/reports.js";
 import { SessionStore } from "../src/core/session-store.js";
 import type {
   AppConfig,
+  PeerAdapter,
   PeerCallContext,
   PeerFailure,
   PeerProbeResult,
   PeerResult,
   RuntimeEvent,
 } from "../src/core/types.js";
+import { PEERS } from "../src/core/types.js";
 import { classifyProviderError } from "../src/peers/errors.js";
 import { withRetry } from "../src/peers/retry.js";
 import { StubAdapter } from "../src/peers/stub.js";
@@ -117,6 +120,283 @@ function providerFailure(error: unknown, attempt: number, started: number): Peer
 }
 
 const regressions: Regression[] = [
+  {
+    name: "durable cancellation during fallback persistence prevents fallback dispatch and settles the round",
+    run: async () => {
+      for (const cancelAtBoundary of [false, true]) {
+        const config = testConfig(`fallback-persistence-${cancelAtBoundary}`);
+        const fallbackModel = "synthetic-fallback-model";
+        config.fallback_models.claude = [fallbackModel];
+        config.model_cost_rates = {
+          ...config.model_cost_rates,
+          claude: {
+            ...config.model_cost_rates?.claude,
+            [fallbackModel]: { input_per_million: 0, output_per_million: 0 },
+          },
+        };
+        const adapters = Object.fromEntries(
+          PEERS.map((peer) => [peer, new StubAdapter(config, peer)]),
+        ) as unknown as Record<(typeof PEERS)[number], PeerAdapter>;
+        const fallback = new StubAdapter(config, "claude", fallbackModel);
+        const nativeFallbackCall = fallback.call.bind(fallback);
+        let fallbackCalls = 0;
+        let cancellationObservedAtDispatch = false;
+        const orchestrator = new CrossReviewOrchestrator(config, undefined, (_config, overrides) =>
+          overrides?.claude ? { ...adapters, claude: fallback } : adapters,
+        );
+        fallback.call = async (prompt, context) => {
+          fallbackCalls += 1;
+          cancellationObservedAtDispatch = orchestrator.store.isCancellationRequested(
+            context.session_id,
+          );
+          return nativeFallbackCall(prompt, context);
+        };
+        adapters.claude.call = async () => {
+          throw new Error("network fetch failed");
+        };
+        const nativeRecord = orchestrator.store.appendFallbackEvent.bind(orchestrator.store);
+        orchestrator.store.appendFallbackEvent = async (id, event) => {
+          const saved = await nativeRecord(id, event);
+          if (cancelAtBoundary)
+            await orchestrator.store.requestCancellation(id, "cancel_during_fallback_persistence");
+          return saved;
+        };
+        const session = await orchestrator.store.init(
+          "Cancel an explicitly configured fallback at its durable persistence boundary.",
+          "codex",
+          [],
+        );
+        const result = await orchestrator.askPeers({
+          session_id: session.session_id,
+          task: session.task,
+          draft: "A static literal artifact.",
+          caller: "codex",
+          caller_status: "NEEDS_EVIDENCE",
+          peers: ["claude"],
+        });
+        assert.equal(fallbackCalls, cancelAtBoundary ? 0 : 1);
+        assert.equal(cancellationObservedAtDispatch, false);
+        assert.equal(result.converged, false);
+        assert.equal(result.session.in_flight, undefined);
+        assert.equal(result.session.generation_in_flight, undefined);
+        assert.equal(result.session.pending_provider_call_reservations?.length ?? 0, 0);
+        assert.equal(
+          result.session.fallback_events?.length,
+          1,
+          "the original fallback event remains auditable",
+        );
+        if (cancelAtBoundary) {
+          assert.equal(result.session.outcome, "aborted");
+          assert.ok(result.round.rejected.some((failure) => failure.failure_class === "cancelled"));
+        }
+        await orchestrator.store.flushPendingEvents();
+      }
+    },
+  },
+  {
+    name: "durable cancellation at recovery reservation prevents a second provider dispatch",
+    run: async () => {
+      for (const cancelAtBoundary of [false, true]) {
+        const config = testConfig(`recovery-reservation-${cancelAtBoundary}`);
+        const adapters = Object.fromEntries(
+          PEERS.map((peer) => [peer, new StubAdapter(config, peer)]),
+        ) as unknown as Record<(typeof PEERS)[number], PeerAdapter>;
+        const orchestrator = new CrossReviewOrchestrator(config, undefined, () => adapters);
+        const session = await orchestrator.store.init(
+          "Cancel after recovery's optimistic check but before its paid reservation.",
+          "codex",
+          [],
+        );
+        const nativeCall = adapters.claude.call.bind(adapters.claude);
+        const dispatchControls: Array<string | undefined> = [];
+        adapters.claude.call = async (prompt, context) => {
+          dispatchControls.push(orchestrator.store.read(context.session_id).control?.status);
+          return nativeCall(prompt, context);
+        };
+        const nativeSave = orchestrator.store.savePeerResult.bind(orchestrator.store);
+        let boundaryReached = false;
+        orchestrator.store.savePeerResult = async (id, round, result, label) => {
+          if (!boundaryReached && label === "unparsed-response") {
+            boundaryReached = true;
+            if (cancelAtBoundary) {
+              await orchestrator.store.requestCancellation(id, "cancel_before_recovery_reserve");
+            }
+          }
+          return nativeSave(id, round, result, label);
+        };
+
+        const result = await orchestrator.askPeers({
+          session_id: session.session_id,
+          task: session.task,
+          draft: "FORCE_BAD_FORMAT",
+          caller: "codex",
+          peers: ["claude"],
+        });
+        assert.equal(boundaryReached, true, "fixture must reach the awaited recovery artifact");
+        assert.equal(dispatchControls.length, cancelAtBoundary ? 1 : 2);
+        assert.ok(
+          dispatchControls.every((control) => control !== "cancel_requested"),
+          "no recovery provider may dispatch after durable cancellation",
+        );
+        assert.equal(result.session.in_flight, undefined);
+        if (cancelAtBoundary) {
+          assert.equal(result.session.outcome, "aborted");
+          assert.equal(result.session.outcome_reason, "session_cancelled");
+          assert.equal(result.converged, false);
+          assert.equal(
+            result.session.failed_attempts?.some((failure) =>
+              failure.message.includes("provider_reservation_cancelled"),
+            ),
+            true,
+            "the rejected recovery reservation must remain diagnosable",
+          );
+        } else {
+          assert.notEqual(result.session.outcome, "aborted");
+        }
+      }
+    },
+  },
+  {
+    name: "requester reverification cannot promote an ask after durable cancellation wins the lock",
+    run: async () => {
+      for (const cancelAtBoundary of [false, true]) {
+        const config = testConfig(`requester-promotion-${cancelAtBoundary}`);
+        const adapters = Object.fromEntries(
+          PEERS.map((peer) => [peer, new StubAdapter(config, peer)]),
+        ) as unknown as Record<(typeof PEERS)[number], PeerAdapter>;
+        const orchestrator = new CrossReviewOrchestrator(config, undefined, () => adapters);
+        const session = await orchestrator.store.init(
+          "Requester reverification cancellation at the durable promotion boundary.",
+          "codex",
+          [],
+        );
+        const reviewers = ["claude", "gemini"] as const;
+        await orchestrator.store.appendRound(session.session_id, {
+          caller_status: "READY",
+          prompt_file: "agent-runs/round-1-prompt.md",
+          peers: [],
+          rejected: [],
+          convergence: checkConvergence([...reviewers], "READY", [], []),
+          convergence_scope: {
+            petitioner: "codex",
+            caller: "codex",
+            caller_status: "READY",
+            expected_peers: [...reviewers],
+            reviewer_peers: [...reviewers],
+          },
+          started_at: new Date().toISOString(),
+        });
+        const checklist = await orchestrator.store.appendEvidenceChecklistItems(
+          session.session_id,
+          1,
+          [{ peer: "claude", ask: "Provide raw npm test output showing Tests 74 passed (74)." }],
+        );
+        const evidence = `${checklist[0]?.id} Process exit code: 0 | COMMAND: npm test | Tests 74 passed (74)`;
+        for (const peer of reviewers) {
+          const nativeCall = adapters[peer].call.bind(adapters[peer]);
+          adapters[peer].call = async (prompt, context) => {
+            const result = await nativeCall(prompt, context);
+            const attachment = prompt.match(
+              /### caller-structured-evidence — `([^`]+)`[^\n]*\nIntegrity: sha256=`([a-f0-9]{64})`/i,
+            );
+            assert.ok(attachment, "reviewer must receive the exact caller evidence custody");
+            const structured = {
+              status: "READY" as const,
+              summary: "No blocking objections remain.",
+              confidence: "verified" as const,
+              evidence_sources: [
+                `Attachment: ${attachment[1]}\nsha256=${attachment[2]}\nArtifact quote: "${evidence}"`,
+              ],
+              caller_requests: [],
+              follow_ups: [],
+            };
+            return {
+              ...result,
+              status: "READY" as const,
+              text: JSON.stringify(structured),
+              structured,
+              parser_warnings: [],
+              decision_quality: "clean" as const,
+            };
+          };
+        }
+        const nativePromote =
+          orchestrator.store.markEvidenceItemsAddressedByRequesterReverification.bind(
+            orchestrator.store,
+          );
+        let boundaryReached = false;
+        let promotedCount = 0;
+        orchestrator.store.markEvidenceItemsAddressedByRequesterReverification = async (
+          id,
+          params,
+        ) => {
+          if (!boundaryReached) {
+            boundaryReached = true;
+            if (cancelAtBoundary) {
+              await orchestrator.store.requestCancellation(id, "cancel_before_requester_promotion");
+            }
+          }
+          const promoted = await nativePromote(id, params);
+          promotedCount += promoted.length;
+          return promoted;
+        };
+
+        const result = await orchestrator.askPeers({
+          session_id: session.session_id,
+          task: session.task,
+          draft: "Implementation candidate under review.",
+          evidence,
+          caller: "codex",
+          peers: [...reviewers],
+        });
+        assert.equal(boundaryReached, true);
+        assert.equal(promotedCount, cancelAtBoundary ? 0 : 1);
+        assert.equal(result.session.in_flight, undefined);
+        const item = result.session.evidence_checklist?.find(
+          (candidate) => candidate.id === checklist[0]?.id,
+        );
+        assert.ok(item);
+        if (cancelAtBoundary) {
+          assert.notEqual(item.status, "addressed");
+          assert.notEqual(item.address_method, "requester_reverified");
+          assert.equal(result.session.outcome, "aborted");
+          assert.equal(result.session.outcome_reason, "session_cancelled");
+          assert.equal(result.converged, false);
+        } else {
+          assert.equal(item.status, "addressed");
+          assert.equal(item.address_method, "requester_reverified");
+          assert.equal(result.converged, true);
+        }
+      }
+    },
+  },
+  {
+    name: "terminal requester reverification preserves checklist history and outcome bytes",
+    run: async () => {
+      const store = new SessionStore(testConfig("terminal-requester-preservation"));
+      const session = await store.init("Preserve terminal requester evidence state.", "codex", []);
+      const checklist = await store.appendEvidenceChecklistItems(session.session_id, 1, [
+        { peer: "claude", ask: "Provide raw npm test output showing Tests 74 passed (74)." },
+      ]);
+      await store.finalize(session.session_id, "aborted", "preserved_terminal_reason");
+      const before = fs.readFileSync(store.metaPath(session.session_id));
+      const promoted = await store.markEvidenceItemsAddressedByRequesterReverification(
+        session.session_id,
+        {
+          round: 2,
+          peer: "claude",
+          evidence_sources: [
+            `${checklist[0]?.id} COMMAND: npm test | EXIT_CODE: 0 | Tests 74 passed (74)`,
+          ],
+        },
+      );
+      assert.deepEqual(promoted, []);
+      assert.deepEqual(fs.readFileSync(store.metaPath(session.session_id)), before);
+      const persisted = store.read(session.session_id);
+      assert.equal(persisted.outcome, "aborted");
+      assert.equal(persisted.outcome_reason, "preserved_terminal_reason");
+    },
+  },
   {
     name: "abort-message-classifies-as-cancelled-nonretryable",
     run: () => {

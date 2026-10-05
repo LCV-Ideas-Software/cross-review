@@ -278,16 +278,19 @@ function openAIEffort(
 }
 
 function promptCacheFields(config: AppConfig, model: string, cacheKey: string | undefined) {
-  if (!config.cache.enabled || !cacheKey) return {};
+  const enabled = config.cache.enabled && !config.cache.disable_per_peer.codex && !!cacheKey;
   if (usesPromptCacheOptions(model)) {
     return {
-      prompt_cache_key: cacheKey,
+      ...(enabled ? { prompt_cache_key: cacheKey } : {}),
       prompt_cache_options: {
-        mode: "implicit" as const,
+        // These models implicitly cache when options are omitted. Explicit
+        // mode with no breakpoints is the native way to prevent cache writes.
+        mode: enabled ? ("implicit" as const) : ("explicit" as const),
         ttl: "30m" as const,
       },
     };
   }
+  if (!enabled) return {};
   const retention: "in_memory" | "24h" = config.cache.ttl.openai === "1h" ? "24h" : "in_memory";
   return {
     prompt_cache_key: cacheKey,
@@ -320,7 +323,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
     const apiKey = this.config.api_keys.codex;
     if (!apiKey) throw new Error("OPENAI_API_KEY was not found in environment variables.");
     const Ctor = await loadOpenAICtor();
-    return new Ctor({ apiKey });
+    return new Ctor({ apiKey, maxRetries: 0, timeout: this.config.retry.timeout_ms });
   }
 
   private assertResponseTerminal(
@@ -475,7 +478,7 @@ export class OpenAIAdapter extends BasePeerAdapter implements PeerAdapter {
     }
     try {
       const probeClient = await this.client();
-      await probeClient.models.list();
+      await probeClient.models.retrieve(this.model);
       return {
         peer: this.id,
         provider: this.provider,

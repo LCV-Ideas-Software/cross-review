@@ -7,21 +7,17 @@
 // in production conditions, not just on synthetic inputs.
 //
 // What it does:
-//  - For each peer the operator opted into via PEERS_TO_TEST env (default
-//    grok), forces the model to a known-incompatible default and asks for
-//    a tiny generation. The expected outcome is either:
-//       (a) The runtime allowlist gate (item 6) drops `reasoning.effort`
-//           silently and the call SUCCEEDS — proves item 6.
-//       (b) The provider rejects with a 400 and the failure carries
-//           `recovery_hint: "consult_docs_then_revise"` plus a docs URL —
-//           proves item 5.
-//  - Anything else is a regression and exits non-zero.
+//  - For each selected supported peer, request a tiny live generation
+//    using the configured model. A successful call proves that this live
+//    request was accepted; offline SDK payload tests verify exact parameters.
+//  - Missing credentials, unsupported peers, empty selection, and every
+//    provider rejection leave the live contract unverified and exit non-zero.
+//    Quota failures are reported as failed verification, not code defects.
 //
-// This script never runs in CI by default. It exists to be triggered
-// after a v2.15.x ship + reload by the operator running:
-//   CROSS_REVIEW_REAL_API_SMOKE=1 \
-//     CROSS_REVIEW_GROK_MODEL=grok-4-latest \
-//     npm run runtime-default-smoke
+// This internal agent/maintainer validation is opt-in and never runs in CI
+// by default. Run it from an already authorized persistent secret session
+// after release/reload, with CROSS_REVIEW_REAL_API_SMOKE=1 and the intended
+// CROSS_REVIEW_GROK_MODEL configured, using npm run runtime-default-smoke.
 import process from "node:process";
 import { loadConfig } from "../src/core/config.js";
 import type { PeerCallContext, RuntimeEvent } from "../src/core/types.js";
@@ -35,8 +31,14 @@ if (!ENABLED) {
   process.exit(0);
 }
 
-const peersToTest = (process.env.PEERS_TO_TEST ?? "grok").split(",").map((p) => p.trim());
+const peersToTest = (process.env.PEERS_TO_TEST ?? "grok")
+  .split(",")
+  .map((p) => p.trim())
+  .filter(Boolean);
 const config = loadConfig();
+let attempted = 0;
+let completed = 0;
+let skipped = 0;
 let failures = 0;
 
 function emit(event: RuntimeEvent): void {
@@ -46,12 +48,19 @@ function emit(event: RuntimeEvent): void {
 }
 
 async function exerciseGrok(): Promise<void> {
+  attempted += 1;
+  if (!config.api_keys.grok) {
+    console.error(
+      "[runtime-default-smoke] FAIL — Grok API key is missing; no contract was tested.",
+    );
+    failures += 1;
+    return;
+  }
   const model = config.models.grok;
   console.log(`[runtime-default-smoke] grok model=${model}`);
   console.log(
     `[runtime-default-smoke] modelAcceptsReasoningEffort(${model})=${modelAcceptsReasoningEffort(model)}`,
   );
-  const adapter = new GrokAdapter(config);
   const context: PeerCallContext = {
     session_id: "00000000-0000-4000-8000-000000000000",
     round: 0,
@@ -59,7 +68,9 @@ async function exerciseGrok(): Promise<void> {
     emit,
   };
   try {
+    const adapter = new GrokAdapter(config);
     const result = await adapter.generate("Reply with the single token: ok.", context);
+    completed += 1;
     console.log(
       `[runtime-default-smoke] grok generation ok: ${result.text.slice(0, 40)} (${result.latency_ms}ms)`,
     );
@@ -84,8 +95,9 @@ async function exerciseGrok(): Promise<void> {
       failures += 1;
     } else {
       console.log(
-        `[runtime-default-smoke] grok call failed for an unrelated reason; not a v2.15 regression. Message: ${message}`,
+        `[runtime-default-smoke] FAIL — Grok contract could not be verified. Message: ${message}`,
       );
+      failures += 1;
     }
   }
 }
@@ -94,12 +106,20 @@ for (const peer of peersToTest) {
   if (peer === "grok") {
     await exerciseGrok();
   } else {
-    console.log(`[runtime-default-smoke] peer=${peer} not yet wired into this script; skipping.`);
+    skipped += 1;
+    failures += 1;
+    console.error(
+      `[runtime-default-smoke] FAIL — peer=${peer} is unsupported; no contract was tested.`,
+    );
   }
 }
 
-if (failures > 0) {
-  console.error(`[runtime-default-smoke] ${failures} regression(s) detected.`);
-  process.exit(1);
+if (attempted === 0 && failures === 0) {
+  failures += 1;
+  console.error("[runtime-default-smoke] FAIL — no peers were selected or tested.");
 }
-console.log("[runtime-default-smoke] all checks passed.");
+console.log(
+  `[runtime-default-smoke] attempted=${attempted} completed=${completed} skipped=${skipped} failures=${failures}`,
+);
+if (failures > 0) process.exit(1);
+console.log("[runtime-default-smoke] all attempted contracts passed.");

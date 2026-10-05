@@ -10,6 +10,7 @@ import {
   getWindowsCurrentUserSid,
   getWindowsTokensFileAclCommands,
   getWindowsTokensFileAclVerificationCommand,
+  getWindowsTokensFileCreationCommand,
   getWindowsTokensFileProtectedEmptyDaclRecoveryCommand,
   type HostTokensLoadDiagnostics,
   loadHostTokens,
@@ -55,6 +56,17 @@ assert.match(
   /[\\/]System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$/i,
   "ACL commands must invoke the absolute System32 PowerShell engine",
 );
+const portableCreation = getWindowsTokensFileCreationCommand("<token-file>", "S-1-5-21-1000");
+const portableCreationScript = portableCreation.args[4] ?? "";
+assert.match(portableCreationScript, /FileMode\]::CreateNew/);
+assert.match(portableCreationScript, /FileOptions\]::None, \$acl/);
+assert.match(portableCreationScript, /FileShare\]::None/);
+assert.match(portableCreationScript, /\$stream\.GetAccessControl/);
+assert.doesNotMatch(JSON.stringify(portableCreation.args), /<token-file>|S-1-5-21-1000/);
+assert.deepEqual(JSON.parse(portableCreation.input ?? "{}"), {
+  Path: "<token-file>",
+  CurrentUserSid: "S-1-5-21-1000",
+});
 const portableReplacementScript = portablePlan[0]?.args[4] ?? "";
 const portableVerificationScript =
   getWindowsTokensFileAclVerificationCommand("<token-file>", "S-1-5-21-1000").args[4] ?? "";
@@ -312,6 +324,38 @@ assert.equal(
 );
 
 const fakeIdentity = { dev: 1n, ino: 2n };
+let normalOpenChecks = 0;
+assert.deepEqual(
+  openTokensFileWithPermissionRecovery("fixture", {
+    platform: "win32",
+    captureSafeIdentity: () => fakeIdentity,
+    openFile: () => 70,
+    openedFileMatchesIdentity: (_filePath, fd, expected) => {
+      normalOpenChecks += 1;
+      assert.equal(fd, 70);
+      assert.equal(expected, fakeIdentity);
+      return true;
+    },
+  }),
+  { fd: 70, permissionsHardened: false },
+  "an ordinary Windows open must return only the pre-bound regular identity",
+);
+assert.equal(normalOpenChecks, 1);
+let normalMismatchCloseCalls = 0;
+assert.throws(
+  () =>
+    openTokensFileWithPermissionRecovery("fixture", {
+      platform: "win32",
+      captureSafeIdentity: () => fakeIdentity,
+      openFile: () => 70,
+      openedFileMatchesIdentity: () => false,
+      closeFile: () => {
+        normalMismatchCloseCalls += 1;
+      },
+    }),
+  /identity changed during open/,
+);
+assert.equal(normalMismatchCloseCalls, 1, "a replaced ordinary entry must close its descriptor");
 const eacces = (): NodeJS.ErrnoException =>
   Object.assign(new Error("fixture access denied"), { code: "EACCES" });
 let portableOpenCalls = 0;
@@ -482,6 +526,7 @@ assert.throws(
       openFile: () => {
         throw Object.assign(new Error("fixture missing"), { code: "ENOENT" });
       },
+      captureSafeIdentity: () => fakeIdentity,
       repairProtectedEmptyDacl: () => {
         otherErrorHardenCalls += 1;
         return true;
@@ -493,11 +538,13 @@ assert.throws(
 assert.equal(otherErrorHardenCalls, 0, "non-permission errors must not alter ACLs");
 
 let unsafePathHardenCalls = 0;
+let unsafePathOpenCalls = 0;
 assert.throws(
   () =>
     openTokensFileWithPermissionRecovery("fixture", {
       platform: "win32",
       openFile: () => {
+        unsafePathOpenCalls += 1;
         throw eacces();
       },
       repairProtectedEmptyDacl: () => {
@@ -506,10 +553,11 @@ assert.throws(
       },
       captureSafeIdentity: () => null,
     }),
-  /fixture access denied/,
-  "symlink, reparse, non-file or uninspectable paths must not be repaired by pathname",
+  /unsafe token entry/,
+  "symlink, reparse, non-file or uninspectable paths must not be opened or repaired",
 );
 assert.equal(unsafePathHardenCalls, 0, "unsafe paths must fail before ACL mutation");
+assert.equal(unsafePathOpenCalls, 0, "unsafe paths must fail before any descriptor open");
 
 let mismatchCloseCalls = 0;
 assert.throws(
@@ -695,6 +743,138 @@ try {
   assert.ok(currentUserSid, "Windows identity fixture must return a SID");
   if (!currentUserSid) throw new Error("Windows identity fixture did not return a SID");
 
+  const writeOrderRoot = path.join(tmpRoot, "write-order");
+  fs.mkdirSync(writeOrderRoot);
+  runIcacls([writeOrderRoot, "/grant", "*S-1-1-0:(OI)(CI)(RX)"]);
+  const writeOrderPath = path.join(writeOrderRoot, "host-tokens.json");
+  const originalWriteFile = fs.writeFileSync;
+  const originalWrite = fs.writeSync;
+  const originalOpen = fs.openSync;
+  let writePhase: "generation" | "migration" = "generation";
+  let failPayloadWrite = false;
+  const inspectedWrites: string[] = [];
+  const inspectedCreations: string[] = [];
+  const inspectFirstPayloadWrite = (fd: number): void => {
+    if (inspectedWrites.includes(writePhase)) return;
+    const opened = fs.fstatSync(fd, { bigint: true });
+    const entry = fs.readdirSync(writeOrderRoot).find((name) => {
+      const stat = fs.lstatSync(path.join(writeOrderRoot, name), { bigint: true });
+      return stat.isFile() && stat.dev === opened.dev && stat.ino === opened.ino;
+    });
+    if (!entry) return;
+    const writingPath = path.join(writeOrderRoot, entry);
+    assert.equal(
+      fs.statSync(writingPath).size,
+      0,
+      "the first payload write must follow empty creation",
+    );
+    const descriptor = spawnSync(
+      windowsPowerShell,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$Path = [string](([Console]::In.ReadToEnd() | ConvertFrom-Json).Path); $fileInfo = New-Object System.IO.FileInfo($Path); $acl = $fileInfo.GetAccessControl(); $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])); $everyoneReads = @($rules | Where-Object { $_.IdentityReference.Value -eq 'S-1-1-0' -and $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::ReadData) }).Count -gt 0; [pscustomobject]@{ Protected = $acl.AreAccessRulesProtected; EveryoneReads = $everyoneReads } | ConvertTo-Json -Compress",
+      ],
+      {
+        encoding: "utf8",
+        input: JSON.stringify({ Path: writingPath }),
+        windowsHide: true,
+        timeout: 10_000,
+      },
+    );
+    assert.equal(descriptor.status, 0, "the first-write native descriptor probe must succeed");
+    const observed = JSON.parse(descriptor.stdout) as {
+      Protected: boolean;
+      EveryoneReads: boolean;
+    };
+    assert.equal(observed.Protected, true, `${writePhase} must protect its DACL before plaintext`);
+    assert.equal(
+      observed.EveryoneReads,
+      false,
+      `${writePhase} must remove inherited Everyone reads`,
+    );
+    inspectedWrites.push(writePhase);
+  };
+  try {
+    process.env.CROSS_REVIEW_TOKENS_FILE = writeOrderPath;
+    fs.openSync = ((file: Parameters<typeof fs.openSync>[0], ...args: unknown[]) => {
+      const fd = Reflect.apply(originalOpen, fs, [file, ...args]) as number;
+      const target = String(file);
+      if (
+        target.startsWith(`${writeOrderRoot}${path.sep}`) &&
+        (writePhase === "generation" || target.endsWith(".tmp")) &&
+        !inspectedCreations.includes(writePhase)
+      ) {
+        // At the first Node open the native CreateNew has already supplied
+        // the protected DACL. Later hardening cannot repair an earlier handle.
+        inspectFirstPayloadWrite(fd);
+        inspectedCreations.push(writePhase);
+      }
+      return fd;
+    }) as typeof fs.openSync;
+    fs.writeFileSync = ((file: Parameters<typeof fs.writeFileSync>[0], ...args: unknown[]) => {
+      if (typeof file === "number") {
+        inspectFirstPayloadWrite(file);
+        if (failPayloadWrite) {
+          throw Object.assign(new Error("fixture plaintext write failed"), { code: "EIO" });
+        }
+      }
+      return Reflect.apply(originalWriteFile, fs, [file, ...args]);
+    }) as typeof fs.writeFileSync;
+    fs.writeSync = ((fd: number, ...args: unknown[]) => {
+      inspectFirstPayloadWrite(fd);
+      if (failPayloadWrite) {
+        throw Object.assign(new Error("fixture plaintext write failed"), { code: "EIO" });
+      }
+      return Reflect.apply(originalWrite, fs, [fd, ...args]);
+    }) as typeof fs.writeSync;
+    assert.ok(ensureHostTokens(writeOrderRoot), "protected first creation must succeed");
+    writePhase = "migration";
+    const legacy = JSON.parse(fs.readFileSync(writeOrderPath, "utf8")) as {
+      version: number;
+    };
+    legacy.version = 1;
+    originalWriteFile(writeOrderPath, JSON.stringify(legacy));
+    assert.ok(loadHostTokens(writeOrderRoot), "protected legacy replacement must succeed");
+    assert.deepEqual(inspectedCreations, ["generation", "migration"]);
+    assert.deepEqual(inspectedWrites, ["generation", "migration"]);
+    assert.equal(JSON.parse(fs.readFileSync(writeOrderPath, "utf8")).version, 2);
+    const failedGenerationPath = path.join(writeOrderRoot, "failed-generation.json");
+    process.env.CROSS_REVIEW_TOKENS_FILE = failedGenerationPath;
+    writePhase = "generation";
+    failPayloadWrite = true;
+    assert.throws(() => ensureHostTokens(writeOrderRoot), /fixture plaintext write failed/);
+    assert.equal(
+      fs.existsSync(failedGenerationPath),
+      false,
+      "a failed new write must remove its own empty entry",
+    );
+    process.env.CROSS_REVIEW_TOKENS_FILE = writeOrderPath;
+    writePhase = "migration";
+    originalWriteFile(writeOrderPath, JSON.stringify(legacy));
+    const originalLegacyBytes = fs.readFileSync(writeOrderPath);
+    const failedMigration: HostTokensLoadDiagnostics = { failure: null };
+    assert.equal(loadHostTokens(writeOrderRoot, failedMigration), null);
+    assert.equal(failedMigration.failure, "io_error");
+    assert.deepEqual(fs.readFileSync(writeOrderPath), originalLegacyBytes);
+    assert.equal(
+      fs.readdirSync(writeOrderRoot).some((entry) => entry.endsWith(".tmp")),
+      false,
+    );
+    failPayloadWrite = false;
+    assert.ok(
+      loadHostTokens(writeOrderRoot),
+      "a corrected retry must migrate the preserved original",
+    );
+  } finally {
+    fs.writeFileSync = originalWriteFile;
+    fs.writeSync = originalWrite;
+    fs.openSync = originalOpen;
+    process.env.CROSS_REVIEW_TOKENS_FILE = tokenPath;
+  }
+
   // Begin from the broad inherited state that `/reset` used to persist when
   // the old multi-process plan was interrupted.
   runIcacls([tokenPath, "/reset"]);
@@ -746,6 +926,45 @@ try {
         windowsHide: true,
         timeout: 10_000,
       });
+    const secureEmptyPath = path.join(
+      tmpRoot,
+      `native-create-${engineName.replaceAll(" ", "-")}.json`,
+    );
+    const secureCreation = getWindowsTokensFileCreationCommand(secureEmptyPath, currentUserSid);
+    const creationResult = executeWithEngine(secureCreation);
+    assert.equal(
+      creationResult.status,
+      0,
+      `${engineName} must protect its exclusive empty creation`,
+    );
+    assert.equal(
+      executeWithEngine(getWindowsTokensFileAclVerificationCommand(secureEmptyPath, currentUserSid))
+        .status,
+      0,
+      `${engineName} must create the exact protected DACL before any payload exists`,
+    );
+    const secureEmptyFd = fs.openSync(secureEmptyPath, "r");
+    try {
+      assert.equal(fs.fstatSync(secureEmptyFd).size, 0);
+      const emptyBytes = fs.readFileSync(secureEmptyFd);
+      assert.equal(emptyBytes.length, 0);
+      assert.equal(
+        executeWithEngine(secureCreation).status,
+        80,
+        "CreateNew must preserve EEXIST semantics",
+      );
+      assert.deepEqual(fs.readFileSync(secureEmptyFd), emptyBytes);
+      assert.equal(fs.fstatSync(secureEmptyFd).size, 0);
+    } finally {
+      fs.closeSync(secureEmptyFd);
+    }
+    assert.equal(
+      executeWithEngine(getWindowsTokensFileAclVerificationCommand(secureEmptyPath, currentUserSid))
+        .status,
+      0,
+      `${engineName} duplicate creation must leave the exact protected DACL unchanged`,
+    );
+    fs.rmSync(secureEmptyPath);
     runIcacls([tokenPath, "/reset"]);
     assert.ok(
       executeWindowsTokensFileAclCommands(plannedCommands, executeWithEngine),
@@ -865,6 +1084,51 @@ try {
       );
     }
     if (symlinkAvailable) {
+      const readDacl = (entryPath: string): string => {
+        const aclRead = spawnSync(
+          enginePath,
+          [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$Path = [string](([Console]::In.ReadToEnd() | ConvertFrom-Json).Path); $fileInfo = New-Object System.IO.FileInfo($Path); if ($null -ne $fileInfo.PSObject.Methods['GetAccessControl']) { $acl = $fileInfo.GetAccessControl() } else { $acl = [System.IO.FileSystemAclExtensions]::GetAccessControl($fileInfo) }; $acl.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)",
+          ],
+          {
+            encoding: "utf8",
+            input: JSON.stringify({ Path: entryPath }),
+            windowsHide: true,
+            timeout: 10_000,
+          },
+        );
+        assert.equal(aclRead.status, 0, "native DACL readback must succeed");
+        return aclRead.stdout.trim();
+      };
+      // Use a complete synthetic record so adopting the linked target would
+      // succeed, rather than being hidden by invalid JSON. Keep its inherited
+      // DACL broad to prove refusal occurs before pathname hardening.
+      fs.writeFileSync(victimPath, fs.readFileSync(tokenPath));
+      const victimBytesBefore = fs.readFileSync(victimPath);
+      const victimDaclBefore = readDacl(victimPath);
+      const linkDiagnostics: HostTokensLoadDiagnostics = { failure: null };
+      process.env.CROSS_REVIEW_TOKENS_FILE = linkPath;
+      try {
+        assert.equal(loadHostTokens(tmpRoot, linkDiagnostics), null);
+        assert.equal(linkDiagnostics.failure, "unsafe_entry");
+        assert.equal(ensureHostTokens(tmpRoot), null);
+      } finally {
+        process.env.CROSS_REVIEW_TOKENS_FILE = tokenPath;
+      }
+      assert.deepEqual(fs.readFileSync(victimPath), victimBytesBefore);
+      assert.equal(
+        readDacl(victimPath),
+        victimDaclBefore,
+        `automatic symlink refusal must leave target DACL unchanged in ${engineName}`,
+      );
+      assert.ok(
+        loadHostTokens(tmpRoot),
+        "the regular protected entry must remain loadable after refusing the link",
+      );
       const victimAclBefore = fs.statSync(victimPath).mode;
       for (const [recipeLabel, recipeText] of [
         ["manual", manualRecipe],

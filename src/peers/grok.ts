@@ -59,6 +59,7 @@ type GrokUsage = {
   input_tokens?: number | undefined;
   output_tokens?: number | undefined;
   total_tokens?: number | undefined;
+  cost_in_usd_ticks?: number | undefined;
   output_tokens_details?: {
     reasoning_tokens?: number | undefined;
   };
@@ -144,9 +145,21 @@ function grokResponseText(response: { output?: unknown }): {
 
 function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefined {
   if (!usage) return undefined;
+  const reasoningTokens = usage.output_tokens_details?.reasoning_tokens;
+  // Current Grok4.7 output includes reasoning, while older documented
+  // examples report visible output separately. The authoritative total
+  // minus full input resolves either shape without adding reasoning twice.
+  // A missing total leaves the reported current output count unchanged.
+  const outputTokens =
+    usage.total_tokens !== undefined &&
+    Number.isFinite(usage.total_tokens) &&
+    usage.input_tokens !== undefined &&
+    Number.isFinite(usage.input_tokens)
+      ? Math.max(usage.output_tokens ?? 0, usage.total_tokens - usage.input_tokens)
+      : usage.output_tokens;
   // xAI's OpenAI-compatible Responses usage surfaces cached tokens under
   // prompt_tokens_details (or input_tokens_details on newer response shapes),
-  // so the same parsing path applies to the current Grok 4.6 pin and legacy
+  // so the same parsing path applies to the current Grok 4.7 pin and legacy
   // supported pins.
   const cached =
     usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0;
@@ -154,10 +167,19 @@ function usageFromGrok(usage: GrokUsage | null | undefined): TokenUsage | undefi
   const result: TokenUsage = {
     input_tokens:
       usage.input_tokens === undefined ? undefined : Math.max(0, providerInput - cached),
-    output_tokens: usage.output_tokens,
+    output_tokens: outputTokens,
     total_tokens: usage.total_tokens,
-    reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
+    reasoning_tokens: reasoningTokens,
   };
+  // xAI's native billing unit is 10^10 ticks per USD and already includes
+  // reasoning and tool fees. Preserve it for reconciliation with the estimate.
+  if (
+    typeof usage.cost_in_usd_ticks === "number" &&
+    Number.isFinite(usage.cost_in_usd_ticks) &&
+    usage.cost_in_usd_ticks >= 0
+  ) {
+    result.provider_reported_total_cost_usd = usage.cost_in_usd_ticks / 10_000_000_000;
+  }
   if (cached > 0) {
     result.cache_read_tokens = cached;
     // xAI reports OpenAI-compatible cached_tokens for reads, but not a
@@ -299,14 +321,15 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
 
   // Responses API uses prompt_cache_key in the request body. The
   // x-grok-conv-id header is the corresponding Chat Completions surface
-  // and is intentionally not duplicated here.
+  // and is intentionally not duplicated here. Disabling participation
+  // omits this sticky routing key; xAI's automatic cache may still hit.
   private async client(): Promise<OpenAI> {
     const apiKey = this.config.api_keys.grok;
     if (!apiKey) {
       throw new Error("GROK_API_KEY was not found in environment variables.");
     }
     const Ctor = await loadOpenAICtor();
-    return new Ctor({ apiKey, baseURL: GROK_BASE_URL });
+    return new Ctor({ apiKey, baseURL: GROK_BASE_URL, maxRetries: 0 });
   }
 
   private assertResponseTerminal(
@@ -350,15 +373,25 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
     try {
       // probe does not need cache scope — it lists models, not posts.
       const probeClient = await this.client();
-      await probeClient.models.list();
+      const models = await probeClient.models.list({ timeout: this.config.retry.timeout_ms });
+      const available = models.data.some((model) => {
+        if (model.id === this.model) return true;
+        const aliases = (model as unknown as { aliases?: unknown }).aliases;
+        return Array.isArray(aliases) && aliases.includes(this.model);
+      });
       return {
         peer: this.id,
         provider: this.provider,
         model: this.model,
-        available: true,
+        available,
         auth_present: true,
         latency_ms: Date.now() - started,
         model_selection: this.config.model_selection.grok,
+        ...(available
+          ? {}
+          : {
+              message: `Grok model ${this.model} was not returned by the authenticated model catalog.`,
+            }),
       };
     } catch (error) {
       const failure = classifyProviderError(this.id, this.provider, this.model, error, 1, started);
@@ -426,7 +459,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           store: false,
           max_output_tokens:
             context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-          ...(this.config.cache.enabled && cacheKey
+          ...(this.config.cache.enabled && !this.config.cache.disable_per_peer.grok && cacheKey
             ? {
                 prompt_cache_key: cacheKey,
               }
@@ -578,7 +611,7 @@ export class GrokAdapter extends BasePeerAdapter implements PeerAdapter {
           store: false,
           max_output_tokens:
             context.max_output_tokens_override ?? maxOutputTokensForPeer(this.config, this.id),
-          ...(this.config.cache.enabled && cacheKey
+          ...(this.config.cache.enabled && !this.config.cache.disable_per_peer.grok && cacheKey
             ? {
                 prompt_cache_key: cacheKey,
               }

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,49 +57,6 @@ function forbiddenInstalledPackages(lock) {
   });
 }
 
-async function reservePort() {
-  const server = createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
-  const port = address.port;
-  await new Promise((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
-  return port;
-}
-
-async function waitForOutput(child, expected, timeoutMs = 15_000) {
-  let output = "";
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`timed out waiting for ${expected}; output=${output}`));
-    }, timeoutMs);
-    const onData = (chunk) => {
-      output += chunk.toString();
-      if (output.includes(expected)) {
-        clearTimeout(timeout);
-        resolve();
-      }
-    };
-    child.stdout.on("data", onData);
-    child.stderr.on("data", onData);
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", (code) => {
-      if (!output.includes(expected)) {
-        clearTimeout(timeout);
-        reject(new Error(`process exited ${code} before ${expected}; output=${output}`));
-      }
-    });
-  });
-}
-
 try {
   await Promise.all([
     mkdir(packDirectory, { recursive: true }),
@@ -150,6 +106,11 @@ try {
   assert.equal(installedPackage.dependencies?.["@modelcontextprotocol/sdk"], undefined);
   assert.equal(installedPackage.main, "dist/src/mcp/server.js");
   assert.equal(installedPackage.bin?.["cross-review"], "dist/src/mcp/server.js");
+  assert.deepEqual(installedPackage.bin, { "cross-review": "dist/src/mcp/server.js" });
+  assert.equal(
+    (await readdir(path.join(installedRoot, "dist", "src"))).includes("dashboard"),
+    false,
+  );
 
   const consumerLock = JSON.parse(
     await readFile(path.join(consumerDirectory, "package-lock.json"), "utf8"),
@@ -207,34 +168,6 @@ try {
   command(process.execPath, ["--input-type=module", "--eval", `await import("${PACKAGE_NAME}")`], {
     cwd: consumerDirectory,
   });
-
-  const dashboardPort = await reservePort();
-  const dashboard = spawn(
-    process.execPath,
-    [path.join(installedRoot, "dist", "src", "dashboard", "server.js")],
-    {
-      cwd: consumerDirectory,
-      env: cleanEnv({
-        CROSS_REVIEW_DASHBOARD_PORT: String(dashboardPort),
-        CROSS_REVIEW_DATA_DIR: stateDirectory,
-        CROSS_REVIEW_STUB: "1",
-        CROSS_REVIEW_STUB_CONFIRMED: "1",
-      }),
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    },
-  );
-  try {
-    await waitForOutput(dashboard, `http://127.0.0.1:${dashboardPort}`);
-    const response = await globalThis.fetch(`http://127.0.0.1:${dashboardPort}/api/health`);
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).ok, true);
-  } finally {
-    dashboard.kill();
-    if (dashboard.exitCode === null) {
-      await new Promise((resolve) => dashboard.once("exit", resolve));
-    }
-  }
 
   console.log("published consumer security regression: PASS");
 } finally {

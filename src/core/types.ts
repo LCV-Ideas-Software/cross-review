@@ -102,6 +102,8 @@ export type DecisionQuality =
   | "clean"
   | "format_warning"
   | "recovered"
+  | "needs_agent_review"
+  // Read compatibility only: older durable records retain this retired label.
   | "needs_operator_review"
   | "failed";
 
@@ -145,10 +147,10 @@ export interface TokenUsage {
   // v2.21.0 (caching): canonical cross-provider cache telemetry. Adapters
   // populate these from provider-native fields (Anthropic
   // cache_creation_input_tokens / cache_read_input_tokens; OpenAI and
-  // Grok prompt_tokens_details.cached_tokens for reads only; DeepSeek
-  // prompt_cache_hit_tokens / prompt_cache_miss_tokens; Gemini
+  // Grok prompt_tokens_details.cached_tokens and DeepSeek Responses
+  // input_tokens_details.cached_tokens for reads only; Gemini
   // usageMetadata.cachedContentTokenCount). The shape is uniform so the
-  // cost layer + dashboard + manifest never branch on provider.
+  // cost layer + reports + manifest never branch on provider.
   cache_read_tokens?: number | undefined;
   cache_write_tokens?: number | undefined;
   cache_provider_mode?: "auto" | "explicit" | "implicit" | "not_supported" | undefined;
@@ -1190,6 +1192,9 @@ export interface ReviewRound {
   caller_status: ReviewStatus;
   draft_file?: string | undefined;
   prompt_file: string;
+  // Exact native review-context binding. Legacy rounds remain readable but
+  // cannot establish that an earlier vote reviewed the current context.
+  review_context_sha256?: string | undefined;
   peers: PeerResult[];
   rejected: PeerFailure[];
   convergence: ConvergenceResult;
@@ -1255,7 +1260,6 @@ export interface AppConfig {
   data_dir: string;
   log_level: "debug" | "info" | "warn" | "error";
   stub: boolean;
-  dashboard_port: number;
   retry: {
     max_attempts: number;
     base_delay_ms: number;
@@ -1282,8 +1286,8 @@ export interface AppConfig {
     max_peer_requests: number;
     // Cap on total persisted evidence inlined into peer-facing prompts.
     // Authenticated caller evidence is persisted automatically; optional
-    // operator artifacts share the same bounded read path. Default 80_000
-    // bytes balances literal evidence needs against provider context limits.
+    // durable peer attachments share the same bounded read path. Default 200_000
+    // UTF-16 characters; the entire corpus is refused when it exceeds this limit.
     max_attached_evidence_chars: number;
   };
   evidence_broker: EvidenceBrokerLimits;

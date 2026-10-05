@@ -90,13 +90,22 @@ function readyHasBlockingTruthfulnessWarning(peer: PeerResult): boolean {
     Array.isArray(structured.caller_requests) &&
     Array.isArray(structured.follow_ups);
   if (!completeReadyContract) return true;
-  return peer.parser_warnings.some(
-    (warning) =>
+  const recoveredDecision =
+    peer.parser_warnings.includes("format_recovery_retry_succeeded") ||
+    peer.parser_warnings.includes("decision_retry_succeeded");
+  return peer.parser_warnings.some((warning) => {
+    // The orchestrator retains first-attempt diagnostics with this prefix
+    // after a separate native recovery call. They remain audit evidence,
+    // but must not veto its complete, lossless, independently grounded
+    // replacement decision. Current-attempt warnings still fail closed.
+    if (recoveredDecision && warning.startsWith("original:")) return false;
+    return (
       warning.includes("truncated") ||
       warning.includes("dropped") ||
       warning.includes("recovered_after_schema_warning") ||
-      READY_BLOCKING_TRUTHFULNESS_WARNINGS.some((blocked) => warning.startsWith(blocked)),
-  );
+      READY_BLOCKING_TRUTHFULNESS_WARNINGS.some((blocked) => warning.startsWith(blocked))
+    );
+  });
 }
 
 /**

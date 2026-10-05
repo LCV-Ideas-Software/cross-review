@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
+
+import { groundReadyPeerEvidence } from "../src/core/orchestrator.js";
 
 import {
+  decisionQualityFromStatus,
   parsePeerStatus,
   READY_CANONICAL_SUMMARY,
   statusInstruction,
   statusJsonSchema,
   statusSchema,
 } from "../src/core/status.js";
+import type { PeerResult } from "../src/core/types.js";
 
 const instruction = statusInstruction();
 const digest = "a".repeat(64);
@@ -70,6 +75,21 @@ assert.match(
   instruction,
   /inspect the artifact/i,
   "anti-laziness guidance must require inspecting the artifact",
+);
+assert.match(
+  instruction,
+  /decode.*for analysis[\s\S]*physical persisted attachment text/i,
+  "decoding an attachment for analysis must not change the cited physical text",
+);
+assert.match(
+  instruction,
+  /Checklist-Item: <id>.*before.*Attachment[\s\S]*never insert checklist metadata.*inside.*quote/i,
+  "checklist metadata must stay outside the literal citation",
+);
+assert.match(
+  instruction,
+  /contiguous literal raw-diff excerpt[\s\S]*Old code quoted only from removed lines/i,
+  "the prompt must explain how a literal removal proof remains groundable",
 );
 
 assert.equal(
@@ -185,5 +205,205 @@ assert.deepEqual(
   [peerAuthoredAsk],
   "an explicit NEEDS_EVIDENCE verdict must keep its real evidence request",
 );
+
+type Attachment = {
+  relative_path: string;
+  content: string;
+  sha256: string;
+};
+
+function attachment(name: string, content: string): Attachment {
+  return {
+    relative_path: `evidence/${name}`,
+    content,
+    sha256: crypto.createHash("sha256").update(content, "utf8").digest("hex"),
+  };
+}
+
+function citation(item: Attachment, quote: string): string {
+  return `Attachment: ${item.relative_path}\nsha256=${item.sha256}\nArtifact quote: "${quote}"`;
+}
+
+function groundCitation(item: Attachment, sources: string[], checklistIds: string[] = []) {
+  const text = JSON.stringify({ ...canonical, evidence_sources: sources });
+  const decision = parsePeerStatus(text);
+  assert.equal(decision.normalized_status, "READY", "the response envelope itself is valid");
+  const peer: PeerResult = {
+    peer: "gemini",
+    provider: "fixture-gemini",
+    model: "fixture-gemini",
+    ...decision,
+    text,
+    raw: {},
+    latency_ms: 0,
+    attempts: 0,
+    decision_quality: decisionQualityFromStatus(decision.status, decision.parser_warnings),
+  };
+  return groundReadyPeerEvidence(peer, {
+    artifactText: "Review proposed source changes.",
+    attachedEvidenceText: "",
+    attachmentRefs: [item.relative_path],
+    evidenceAttachments: [item],
+    callerSubmittedAttachments: [item],
+    evidenceChecklistItemIds: checklistIds,
+    runtimeFacts: {},
+  });
+}
+
+const jsonLines = attachment(
+  "patch-lines.json",
+  JSON.stringify(['+const mode = "strict";'], null, 2),
+);
+const literal = attachment(
+  "literal.txt",
+  'const integrityMode = "strict";\nTests 74 passed (74)\nNo blocking objections remain.\nCorreções de configuração concluídas.\nconst message = "<verified>";\nif (enabled) {  return true; }\napi_key = [REDACTED]',
+);
+const patch = attachment(
+  "change.patch",
+  "diff --git a/source.ts b/source.ts\n--- a/source.ts\n+++ b/source.ts\n@@ -1 +1 @@\n-const insecureMode = true;\n+const insecureMode = false;\n",
+);
+const checklistId = "0123456789abcdef";
+const groundingCases = [
+  {
+    name: "physically escaped JSON-array source quote",
+    item: jsonLines,
+    sources: [citation(jsonLines, '+const mode = \\"strict\\";')],
+    expected: "READY",
+  },
+  {
+    name: "decoded JSON value presented as physical attachment text",
+    item: jsonLines,
+    sources: [citation(jsonLines, '+const mode = "strict";')],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "same-artifact literal",
+    item: literal,
+    sources: [citation(literal, 'const integrityMode = "strict";')],
+    expected: "READY",
+  },
+  {
+    name: "correct literal with wrong digest",
+    item: literal,
+    sources: [
+      citation(literal, 'const integrityMode = "strict";').replace(literal.sha256, "f".repeat(64)),
+    ],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "correct literal from a different named attachment",
+    item: literal,
+    sources: [
+      citation(literal, 'const integrityMode = "strict";').replace(
+        literal.relative_path,
+        "evidence/other.txt",
+      ),
+    ],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "invented literal suffix",
+    item: literal,
+    sources: [citation(literal, 'const integrityMode = "strict"; invented suffix')],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "one valid source masking a second invented source",
+    item: literal,
+    sources: [
+      citation(literal, "Tests 74 passed (74)"),
+      citation(literal, "invented evidence literal"),
+    ],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "rationale appended after the literal",
+    item: literal,
+    sources: [
+      `${citation(literal, "Tests 74 passed (74)")} Therefore the implementation is correct.`,
+    ],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "old-code-only quote from removed hunk",
+    item: patch,
+    sources: [citation(patch, "-const insecureMode = true;")],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "contiguous removed and added raw diff lines",
+    item: patch,
+    sources: [citation(patch, "-const insecureMode = true;\n+const insecureMode = false;")],
+    expected: "READY",
+  },
+  {
+    name: "contiguous actual hunk header and removal",
+    item: patch,
+    sources: [citation(patch, "@@ -1 +1 @@\n-const insecureMode = true;")],
+    expected: "READY",
+  },
+  {
+    name: "literal Unicode",
+    item: literal,
+    sources: [citation(literal, "Correções de configuração concluídas.")],
+    expected: "READY",
+  },
+  {
+    name: "additional inner Unicode escape layer",
+    item: literal,
+    sources: [
+      citation(literal, "Corre\\u00e7\\u00f5es de configura\\u00e7\\u00e3o conclu\\u00eddas."),
+    ],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "canonical same-artifact assurance is not rejected by the generic lexicon",
+    item: literal,
+    sources: [citation(literal, "No blocking objections remain.")],
+    expected: "READY",
+  },
+  {
+    name: "checklist metadata before the canonical citation",
+    item: literal,
+    sources: [`Checklist-Item: ${checklistId}\n${citation(literal, "Tests 74 passed (74)")}`],
+    expected: "READY",
+  },
+  {
+    name: "checklist metadata interleaved inside the literal",
+    item: literal,
+    sources: [citation(literal, `Tests 74 passed (74)\nChecklist-Item: ${checklistId}`)],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "HTML entity conversion changes the actual quote",
+    item: literal,
+    sources: [citation(literal, 'const message = "&lt;verified&gt;";')],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "whitespace normalization changes the actual quote",
+    item: literal,
+    sources: [citation(literal, "if (enabled) { return true; }")],
+    expected: "NEEDS_EVIDENCE",
+  },
+  {
+    name: "already-redacted literal remains reviewable without reconstructing a key",
+    item: literal,
+    sources: [citation(literal, "api_key = [REDACTED]")],
+    expected: "READY",
+  },
+] as const;
+
+for (const testCase of groundingCases) {
+  const grounded = groundCitation(testCase.item, [...testCase.sources], [checklistId]);
+  assert.equal(grounded.result.status, testCase.expected, testCase.name);
+  assert.equal(grounded.grounded, testCase.expected === "READY", testCase.name);
+  if (testCase.expected === "NEEDS_EVIDENCE") {
+    assert.ok(
+      grounded.failed_predicates.includes("every_source_independently_grounded"),
+      `${testCase.name}: the concrete failed predicate remains visible`,
+    );
+  }
+}
 
 console.log("[status-citation-contract-smoke] PASS");

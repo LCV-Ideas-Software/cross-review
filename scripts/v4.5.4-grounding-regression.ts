@@ -1,13 +1,25 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
+import { loadConfig } from "../src/core/config.js";
+
+import { checkConvergence } from "../src/core/convergence.js";
 import {
+  CrossReviewOrchestrator,
   evidencePreflight,
   groundReadyPeerEvidence,
   peerAuthoredEvidenceChecklistAsks,
   truthfulnessPreflight,
 } from "../src/core/orchestrator.js";
-import { parsePeerStatus, statusJsonSchema } from "../src/core/status.js";
-import type { PeerId, PeerResult } from "../src/core/types.js";
+import {
+  decisionQualityFromStatus,
+  parsePeerStatus,
+  statusJsonSchema,
+} from "../src/core/status.js";
+import type { PeerAdapter, PeerId, PeerResult, RuntimeEvent } from "../src/core/types.js";
+import { StubAdapter } from "../src/peers/stub.js";
 
 type Regression = {
   name: string;
@@ -99,6 +111,317 @@ const defaultAttachment: EvidenceAttachment = {
 };
 
 const regressions: Regression[] = [
+  ...(["format", "decision"] as const).map((recoveryKind): Regression => {
+    return {
+      name: `actual round commits a lossless grounded ${recoveryKind} replacement with two independent READY reviewers`,
+      run: async () => {
+        process.env.CROSS_REVIEW_STUB = "1";
+        process.env.CROSS_REVIEW_STUB_CONFIRMED = "1";
+        const directory = fs.mkdtempSync(
+          path.join(os.tmpdir(), "cross-review-grounded-format-recovery-"),
+        );
+        const base = loadConfig();
+        const allPeers: PeerId[] = ["codex", "claude", "gemini", "deepseek", "grok", "perplexity"];
+        const config = {
+          ...base,
+          data_dir: directory,
+          stub: true,
+          peer_enabled: {
+            codex: true,
+            claude: true,
+            gemini: true,
+            deepseek: false,
+            grok: false,
+            perplexity: false,
+          },
+          cost_rates: Object.fromEntries(
+            allPeers.map((peer) => [
+              peer,
+              { input_per_million: 0, output_per_million: 0, search_queries_per_1000: 0 },
+            ]),
+          ),
+          budget: {
+            ...base.budget,
+            max_session_cost_usd: 10_000,
+            preflight_max_round_cost_usd: 10_000,
+          },
+        };
+        const adapters = {} as Record<PeerId, PeerAdapter>;
+        const calls = new Map<PeerId, number>();
+        const events: RuntimeEvent[] = [];
+        let sources: string[] = [];
+        for (const peer of allPeers) {
+          const adapter = new StubAdapter(config, peer);
+          adapter.call = async (_prompt, context) => {
+            const attempt = (calls.get(peer) ?? 0) + 1;
+            calls.set(peer, attempt);
+            context.emit({
+              type: "peer.call.started",
+              session_id: context.session_id,
+              round: context.round,
+              peer,
+              message: "Synthetic native parser recovery fixture.",
+            });
+            const missingDecision =
+              recoveryKind === "decision" && peer === "claude" && attempt === 1;
+            const text = missingDecision
+              ? "Synthetic diagnostic without a decision sentinel."
+              : JSON.stringify({
+                  status: "READY",
+                  summary:
+                    peer === "claude" && attempt === 1
+                      ? "x".repeat(801)
+                      : "No blocking objections remain.",
+                  confidence: "verified",
+                  evidence_sources: sources,
+                  caller_requests: [],
+                  follow_ups: [],
+                });
+            const parsed = parsePeerStatus(text);
+            if (missingDecision) parsed.parser_warnings.push("decision_content_truncated");
+            if (peer === "claude" && attempt === 1) {
+              assert.notEqual(parsed.status, "READY");
+              assert.ok(
+                parsed.parser_warnings.includes(
+                  missingDecision ? "decision_content_truncated" : "ready_rejected_lossy_parse",
+                ),
+              );
+            } else {
+              assert.equal(parsed.status, "READY");
+              assert.deepEqual(parsed.parser_warnings, []);
+            }
+            return {
+              peer,
+              provider: adapter.provider,
+              model: adapter.model,
+              model_reported: adapter.model,
+              model_match: true,
+              ...parsed,
+              text,
+              raw: { synthetic_only: true },
+              attempts: 1,
+              latency_ms: 1,
+              decision_quality: decisionQualityFromStatus(parsed.status, parsed.parser_warnings),
+              usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
+              cost: {
+                currency: "USD",
+                input_cost: 0,
+                output_cost: 0,
+                total_cost: 0,
+                estimated: false,
+                source: "stub",
+              },
+            };
+          };
+          adapters[peer] = adapter;
+        }
+        const orchestrator = new CrossReviewOrchestrator(
+          config,
+          (event) => events.push(event),
+          () => adapters,
+        );
+        try {
+          const task = "Review the completed implementation that reports npm test with 74 passed.";
+          const session = await orchestrator.store.init(task, "codex", []);
+          const attachment = await orchestrator.store.attachEvidence(session.session_id, {
+            label: "verified-test-output",
+            content: EVIDENCE_CONTENT,
+            attached_by: "codex",
+            origin: "session_attach_evidence",
+          });
+          const stored = orchestrator.store.readEvidenceAttachments(
+            session.session_id,
+            config.prompt.max_attached_evidence_chars,
+          )[0];
+          assert.ok(stored?.sha256);
+          sources = [
+            citation(
+              { relative_path: attachment.path, sha256: stored.sha256, content: stored.content },
+              EVIDENCE_CONTENT,
+            ),
+          ];
+          const result = await orchestrator.askPeers({
+            session_id: session.session_id,
+            caller: "codex",
+            caller_status: "READY",
+            task,
+            draft: "The completed implementation reports npm test with 74 passed.",
+            peers: ["claude", "gemini"],
+          });
+          assert.equal(
+            calls.get("claude"),
+            2,
+            "one lossy first attempt requires exactly one native recovery",
+          );
+          assert.equal(calls.get("gemini"), 1, "the independent clean reviewer requires no retry");
+          assert.equal(
+            events.filter((event) => event.type === "peer.format_recovery.started").length,
+            1,
+          );
+          assert.equal(result.round.convergence.converged, true);
+          assert.deepEqual(result.round.convergence.ready_peers.sort(), ["claude", "gemini"]);
+          const recovered = result.round.peers.find((peer) => peer.peer === "claude");
+          assert.ok(recovered);
+          assert.equal(recovered.status, "READY");
+          assert.equal(recovered.decision_quality, "recovered");
+          if (recoveryKind === "format") {
+            assert.ok(recovered.parser_warnings.includes("original:summary_truncated_to_800"));
+            assert.ok(recovered.parser_warnings.includes("original:ready_rejected_lossy_parse"));
+          } else {
+            assert.ok(recovered.parser_warnings.includes("original:decision_content_truncated"));
+          }
+          assert.ok(
+            recovered.parser_warnings.includes(
+              recoveryKind === "decision"
+                ? "decision_retry_succeeded"
+                : "format_recovery_retry_succeeded",
+            ),
+          );
+          assert.equal(recovered.parser_warnings.includes("summary_truncated_to_800"), false);
+          assert.equal(recovered.attempts, 2);
+          assert.equal(recovered.usage?.total_tokens, 60);
+          assert.equal(recovered.cost?.total_cost, 0);
+          const committed = orchestrator.store.read(session.session_id);
+          assert.equal(committed.rounds.length, 1);
+          assert.equal(committed.rounds[0]?.convergence.converged, true);
+          assert.equal(committed.in_flight, undefined);
+          const agentDirectory = path.join(
+            orchestrator.store.sessionDir(session.session_id),
+            "agent-runs",
+          );
+          const names = fs.readdirSync(agentDirectory);
+          const originalName = names.find((name) =>
+            name.includes(`claude-${recoveryKind === "decision" ? "unparsed" : "lossy"}-response`),
+          );
+          const replacementName = names.find((name) =>
+            name.includes(
+              `claude-${recoveryKind === "decision" ? "decision-retry" : "format-recovery"}-response`,
+            ),
+          );
+          assert.ok(
+            originalName && replacementName,
+            "both original and replacement raw records must remain durable",
+          );
+          const original = JSON.parse(
+            fs.readFileSync(path.join(agentDirectory, originalName), "utf8"),
+          ) as PeerResult;
+          const replacement = JSON.parse(
+            fs.readFileSync(path.join(agentDirectory, replacementName), "utf8"),
+          ) as PeerResult;
+          if (recoveryKind === "format") {
+            assert.equal(JSON.parse(original.text).summary.length, 801);
+            assert.ok(original.parser_warnings.includes("ready_rejected_lossy_parse"));
+          } else {
+            assert.equal(original.text, "Synthetic diagnostic without a decision sentinel.");
+            assert.ok(original.parser_warnings.includes("decision_content_truncated"));
+          }
+          assert.equal(replacement.status, "READY");
+          assert.deepEqual(replacement.parser_warnings, []);
+        } finally {
+          await orchestrator.store.flushPendingEvents();
+          assert.equal(path.resolve(directory), directory);
+          assert.ok(path.basename(directory).startsWith("cross-review-grounded-format-recovery-"));
+          fs.rmSync(directory, { recursive: true, force: true });
+        }
+      },
+    };
+  }),
+  {
+    name: "model-authored warning prefixes and success markers cannot launder a lossy READY",
+    run: () => {
+      const smuggled = parsePeerStatus(
+        JSON.stringify({
+          status: "READY",
+          summary: "x".repeat(801),
+          confidence: "verified",
+          evidence_sources: [citation(defaultAttachment, EVIDENCE_CONTENT)],
+          caller_requests: [],
+          follow_ups: [],
+          parser_warnings: [
+            "original:summary_truncated_to_800",
+            "format_recovery_retry_succeeded",
+            "decision_retry_succeeded",
+          ],
+          decision_quality: "recovered",
+        }),
+      );
+      assert.notEqual(smuggled.status, "READY");
+      assert.ok(smuggled.parser_warnings.includes("ready_rejected_lossy_parse"));
+      assert.equal(smuggled.parser_warnings.includes("format_recovery_retry_succeeded"), false);
+      assert.equal(smuggled.parser_warnings.includes("decision_retry_succeeded"), false);
+      assert.equal(
+        smuggled.parser_warnings.some((warning) => warning.startsWith("original:")),
+        false,
+      );
+      assert.equal(Object.hasOwn(smuggled.structured ?? {}, "parser_warnings"), false);
+    },
+  },
+  ...(["format_recovery_retry_succeeded", "decision_retry_succeeded"] as const).map(
+    (successMarker): Regression => ({
+      name: `lossless ${successMarker} READY is not vetoed by retained original parse diagnostics`,
+      run: () => {
+        const verdict = {
+          status: "READY",
+          summary: "No blocking objections remain.",
+          confidence: "verified",
+          evidence_sources: [citation(defaultAttachment, EVIDENCE_CONTENT)],
+          caller_requests: [],
+          follow_ups: [],
+        };
+        const original = parsePeerStatus(JSON.stringify({ ...verdict, summary: "x".repeat(801) }));
+        assert.equal(original.parser_warnings.includes("ready_rejected_lossy_parse"), true);
+        assert.notEqual(original.status, "READY");
+        const recovered = parsePeerStatus(JSON.stringify(verdict));
+        assert.equal(recovered.status, "READY");
+        assert.deepEqual(recovered.parser_warnings, []);
+        const warnings = [
+          ...original.parser_warnings.map((warning) => `original:${warning}`),
+          ...recovered.parser_warnings,
+          successMarker,
+        ];
+        const grounded = groundReadyPeerEvidence(
+          readyPeer(recovered.structured?.evidence_sources ?? [], "claude", {
+            structured: recovered.structured,
+            parser_warnings: warnings,
+            decision_quality: "recovered",
+          }),
+          groundingInput("The completed implementation reports npm test with 74 passed."),
+        );
+        assert.equal(grounded.result.status, "READY");
+        assert.equal(grounded.grounded, true);
+        const convergence = checkConvergence(["claude"], "READY", [grounded.result], []);
+        assert.equal(convergence.converged, true);
+        assert.deepEqual(convergence.ready_peers, ["claude"]);
+        assert.deepEqual(grounded.result.parser_warnings, warnings);
+
+        const currentLossy = {
+          ...grounded.result,
+          parser_warnings: [...warnings, "summary_truncated_to_800"],
+        };
+        assert.equal(checkConvergence(["claude"], "READY", [currentLossy], []).converged, false);
+        const noRecovery = {
+          ...grounded.result,
+          parser_warnings: warnings.filter((warning) => warning !== successMarker),
+        };
+        assert.equal(checkConvergence(["claude"], "READY", [noRecovery], []).converged, false);
+        const failedRecovery = {
+          ...grounded.result,
+          parser_warnings: [...noRecovery.parser_warnings, "decision_retry_returned_no_status"],
+        };
+        assert.equal(checkConvergence(["claude"], "READY", [failedRecovery], []).converged, false);
+        const missingContract = { ...grounded.result, structured: null };
+        assert.equal(checkConvergence(["claude"], "READY", [missingContract], []).converged, false);
+        const currentFabrication = {
+          ...grounded.result,
+          parser_warnings: [...warnings, "ready_without_concrete_evidence_sources"],
+        };
+        assert.equal(
+          checkConvergence(["claude"], "READY", [currentFabrication], []).converged,
+          false,
+        );
+      },
+    }),
+  ),
   {
     name: "grounding demotion keeps server remediation out of the peer evidence checklist",
     run: () => {

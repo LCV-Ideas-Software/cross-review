@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { mock } from "node:test";
 
 // v2.13.0/v2.14.0 (CodeQL js/insecure-temporary-file): use
 // `fs.mkdtempSync(prefix)` which is the canonical CodeQL-recognized
@@ -48,7 +49,7 @@ import { classifyProviderError } from "../src/peers/errors.js";
 import { geminiTextWithWarning } from "../src/peers/gemini.js";
 import { selectFromCandidates } from "../src/peers/model-selection.js";
 import { StubAdapter } from "../src/peers/stub.js";
-import { redact, redactJsonValue } from "../src/security/redact.js";
+import { redact, redactJsonValue, safeErrorMessage } from "../src/security/redact.js";
 
 function persistDeadInFlightOwner(orchestrator: CrossReviewOrchestrator, sessionId: string): void {
   const meta = orchestrator.store.read(sessionId);
@@ -348,11 +349,12 @@ const adapterExpectations: Array<{ file: string; field: string | RegExp }> = [
   { file: "src/peers/gemini.ts", field: "generateContentStream" },
   {
     file: "src/peers/deepseek.ts",
-    field: configurableOutputBudgetField("max_tokens"),
+    field: configurableOutputBudgetField("max_output_tokens"),
   },
-  { file: "src/peers/deepseek.ts", field: 'type: "enabled"' },
-  { file: "src/peers/deepseek.ts", field: "reasoning_effort:" },
-  { file: "src/peers/deepseek.ts", field: "...deepSeekThinking(this.config" },
+  { file: "src/peers/deepseek.ts", field: "reasoning: {" },
+  { file: "src/peers/deepseek.ts", field: "instructions: this.systemPrompt(context)" },
+  { file: "src/peers/deepseek.ts", field: "schema: portableStatusJsonSchema" },
+  { file: "src/peers/deepseek.ts", field: "client.responses.create" },
   { file: "src/peers/deepseek.ts", field: "stream: true" },
   {
     file: "src/peers/grok.ts",
@@ -500,6 +502,23 @@ const repeatedSameLabel = pemMarker("BEGIN", "RSA PRIVATE KEY").repeat(2_000);
 assert.equal(redact(repeatedSameLabel), "[REDACTED]");
 assert.equal(Date.now() - repeatedSameLabelStarted < 1_000, true);
 
+// Complete caller evidence may contain many recognized marker-shaped blocks.
+// Both separate and unclosed blocks must avoid repeated whole-suffix scans.
+const fullCorpusPemStarted = Date.now();
+const fullCorpusUnclosedPem = pemMarker("BEGIN", "PRIVATE KEY").repeat(7_500);
+assert.equal(redact(`before ${fullCorpusUnclosedPem}`), "before [REDACTED]");
+const fullCorpusBalancedPem = pemBlock("PRIVATE KEY", "synthetic").repeat(3_000);
+assert.equal(redact(fullCorpusBalancedPem), "[REDACTED]".repeat(3_000));
+assert.equal(Date.now() - fullCorpusPemStarted < 1_000, true);
+const orphanEnd = pemMarker("END", "RSA PRIVATE KEY");
+assert.equal(redact(`before ${orphanEnd} after`), `before ${orphanEnd} after`);
+const orphanEndWithSharedBegin = `${orphanEnd}BEGIN PRIVATE KEY-----\nsynthetic-private-material`;
+assert.equal(redact(orphanEndWithSharedBegin), `${orphanEnd.slice(0, -5)}[REDACTED]`);
+assert.equal(
+  redact(pemBlock("PUBLIC KEY", "public-material")),
+  pemBlock("PUBLIC KEY", "public-material"),
+);
+
 const constructedToken = ["sk", "test", "A".repeat(24)].join("-");
 assert.equal(redact(`token ${constructedToken}`), "token [REDACTED]");
 const redactedJsonValue = redactJsonValue({
@@ -522,6 +541,257 @@ assert.equal(redact(xaiKey), "[REDACTED]");
 // NOT match — protects against false-positives on user prose.
 const shortXai = "xai-short";
 assert.equal(redact(`prefix ${shortXai} suffix`), `prefix ${shortXai} suffix`);
+
+const perplexityKey = ["pplx", "S".repeat(48)].join("-");
+assert.equal(redact(perplexityKey), "[REDACTED]");
+assert.equal(redact(`provider error: ${perplexityKey}`), "provider error: [REDACTED]");
+assert.equal(redact("pplx-short"), "pplx-short");
+// Native sk- key matching must not restart inside ordinary evidence names.
+for (const identifier of [
+  "signed-exit-ask-peers-independent-green.json",
+  `ask-ant-${"A".repeat(40)}`,
+  `7sk-${"A".repeat(40)}`,
+  `identifier_sk-${"A".repeat(40)}`,
+]) {
+  assert.equal(redact(identifier), identifier);
+  assert.equal(redact(`prefix '${identifier}' suffix`), `prefix '${identifier}' suffix`);
+  assert.deepEqual(redactJsonValue({ message: identifier }), { message: identifier });
+  assert.deepEqual(redactJsonValue({ api_key: identifier }), { api_key: "[REDACTED]" });
+}
+for (const prefix of ["sk-", "sk-ant-"]) {
+  const nativeKey = `${prefix}${"A".repeat(40)}`;
+  assert.equal(redact(nativeKey), "[REDACTED]");
+  assert.equal(redact(`prefix '${nativeKey}' suffix`), "prefix '[REDACTED]' suffix");
+  assert.equal(redact(`prefix-${nativeKey}`), "prefix-[REDACTED]");
+  assert.equal(redact(`API_KEY=${nativeKey}`), "API_KEY=[REDACTED]");
+  assert.equal(redact(JSON.stringify({ message: nativeKey })), '{"message":"[REDACTED]"}');
+}
+// CROSREV-55/56: Resend token matches must not corrupt benign evidence tags.
+for (const identifier of [
+  "bare_async_failure_records_its_shape",
+  "store_boundary_refuses_ownerless_sessions",
+  "store_rejects_forged_custody_without_writes",
+  `identifier_re_${"A".repeat(40)}`,
+  `7re_${"A".repeat(40)}`,
+]) {
+  assert.equal(redact(identifier), identifier);
+  assert.equal(redact(`prefix ${identifier}: PASS suffix`), `prefix ${identifier}: PASS suffix`);
+  assert.deepEqual(redactJsonValue({ message: identifier }), { message: identifier });
+}
+const syntheticResendKey = `re_${"A".repeat(40)}`;
+assert.equal(redact(syntheticResendKey), "[REDACTED]");
+assert.equal(redact(`prefix '${syntheticResendKey}' suffix`), "prefix '[REDACTED]' suffix");
+assert.equal(redact(`prefix-${syntheticResendKey}`), "prefix-[REDACTED]");
+assert.equal(redact(`RESEND_API_KEY=${syntheticResendKey}`), "RESEND_API_KEY=[REDACTED]");
+assert.equal(redact(JSON.stringify({ message: syntheticResendKey })), '{"message":"[REDACTED]"}');
+assert.equal(redact("re_short"), "re_short");
+console.log("[smoke] resend_token_start_boundary_test: PASS");
+
+for (const key of ["API_KEY", "PERPLEXITY_API_KEY", "apiKey", "CROSS_REVIEW_CALLER_TOKEN"]) {
+  const value = "unprefixed-synthetic-value";
+  assert.equal(redactJsonValue({ nested: [{ [key]: value }] }).nested[0]?.[key], "[REDACTED]");
+  const redactedText = redact(JSON.stringify({ [key]: value }));
+  assert.equal(JSON.parse(redactedText)[key], "[REDACTED]");
+  assert.equal(redact(`${key}=${value}`), `${key}=[REDACTED]`);
+}
+assert.deepEqual(redactJsonValue({ input_tokens: 123, model: "perplexity/kimi-k3" }), {
+  input_tokens: 123,
+  model: "perplexity/kimi-k3",
+});
+// Container-valued credentials in error text must be masked without normalizing
+// unrelated JSON bytes or dropping duplicate protocol members.
+const textContainerSecret = 'SYNTHETIC-prefixless-"quoted]}' + "\\tail";
+for (const [key, value] of [
+  ["api_key", [textContainerSecret, { nested: [textContainerSecret] }]],
+  ["PERPLEXITY_API_KEY", { nested: [textContainerSecret, { value: textContainerSecret }] }],
+] as const) {
+  const prefix = `prefix { "${key}" : `;
+  const suffix = ', "input_tokens" : 7, "benign" : ["read", {"count":2}] } suffix';
+  const original = prefix + JSON.stringify(value) + suffix;
+  const expected = `${prefix}"[REDACTED]"${suffix}`;
+  assert.equal(redact(original), expected);
+  assert.equal(safeErrorMessage(new Error(original)), expected);
+  const encoded = JSON.stringify({ message: original, status: "NOT_READY", input_tokens: 7 });
+  const encodedRedacted = redact(encoded);
+  assert.equal(
+    encodedRedacted,
+    JSON.stringify({ message: expected, status: "NOT_READY", input_tokens: 7 }),
+  );
+  assert.equal(JSON.parse(encodedRedacted).message, expected);
+}
+for (const [prose, expected] of [
+  ['request used "API_KEY=["SYNTHETIC-prefixless-secret"]"', 'request used "API_KEY=[REDACTED]"'],
+  [
+    'request used: "API_KEY={"nested":["SYNTHETIC-prefixless-secret"]}"',
+    'request used: "API_KEY=[REDACTED]"',
+  ],
+] as const) {
+  assert.equal(redact(prose), expected);
+  assert.doesNotMatch(redact(prose), /SYNTHETIC-/);
+  assert.match(redact(prose), /\[REDACTED\]/);
+}
+const prefixedPayload = "Error: " + JSON.stringify('{"api_key":[1,2]}');
+assert.equal(redact(prefixedPayload), "Error: " + JSON.stringify('{"api_key":"[REDACTED]"}'));
+for (const prefix of ["Error: ", "warning: payload=", "request rejected -> "]) {
+  for (const layers of [1, 2]) {
+    const encode = (text: string): string =>
+      layers === 1 ? JSON.stringify(text) : JSON.stringify(JSON.stringify(text));
+    for (const value of [
+      [1, 2],
+      { nested: [textContainerSecret, { value: textContainerSecret }] },
+      textContainerSecret,
+      "short",
+      "",
+    ]) {
+      const encodedValue = JSON.stringify(value);
+      const inner =
+        `{ "status":"NOT_READY", "api_key": ${encodedValue}, "status":"READY", ` +
+        '"input_tokens":7, "benign":["read"] }';
+      const expectedInner = inner.replace(encodedValue, '"[REDACTED]"');
+      const suffix = " unrelated suffix";
+      const output = redact(prefix + encode(inner) + suffix);
+      assert.equal(output, prefix + encode(expectedInner) + suffix);
+      let decodedInner = JSON.parse(output.slice(prefix.length, -suffix.length)) as string;
+      if (layers === 2) decodedInner = JSON.parse(decodedInner) as string;
+      assert.equal(decodedInner, expectedInner);
+      assert.equal(JSON.parse(decodedInner).api_key, "[REDACTED]");
+      assert.equal(parsePeerStatus(decodedInner).status, null);
+    }
+  }
+}
+for (const layers of [1, 2]) {
+  const encode = (text: string): string =>
+    layers === 1 ? JSON.stringify(text) : JSON.stringify(JSON.stringify(text));
+  for (const malformedInner of [
+    '{"api_key":["SYNTHETIC-unclosed',
+    '{"api_key":{"nested":["SYNTHETIC-mismatched"]]',
+    '{"api_key":"SYNTHETIC-unclosed',
+  ]) {
+    assert.equal(
+      redact("Error: " + encode(malformedInner) + " preserved suffix"),
+      "Error: " + encode('{"api_key":"[REDACTED]"') + " preserved suffix",
+    );
+  }
+  const benignPrefixed = "Error: " + encode('{"input_tokens":[1,2],"token_count":7}') + " suffix";
+  assert.equal(redact(benignPrefixed), benignPrefixed);
+}
+assert.equal(
+  redact('{"id-token":"write","token":"write"}'),
+  '{"id-token":"write","token":"write"}',
+);
+for (const permission of ["write", "none"]) {
+  const nativePermission = { permissions: { "id-token": permission }, input_tokens: 7 };
+  assert.deepEqual(redactJsonValue(nativePermission), nativePermission);
+  const rawPermission =
+    `{ "status":"NOT_READY", "id-token":"${permission}", "status":"READY", ` + '"input_tokens":7 }';
+  for (const layers of [0, 1, 2]) {
+    const encoded =
+      layers === 0
+        ? rawPermission
+        : layers === 1
+          ? JSON.stringify(rawPermission)
+          : JSON.stringify(JSON.stringify(rawPermission));
+    const diagnostic = `Error: ${encoded} preserved suffix`;
+    assert.equal(redact(diagnostic), diagnostic);
+    assert.equal(parsePeerStatus(rawPermission).status, null);
+  }
+}
+const workflowJwtFixture = `${"A".repeat(36)}.${"B".repeat(24)}.${"C".repeat(24)}`;
+for (const [key, value] of [
+  ["id-token", workflowJwtFixture],
+  ["id-token", "short"],
+  ["id-token", ["write"]],
+  ["id-token", { value: "none" }],
+  ["api_key", "short"],
+  ["token", "write"],
+  ["id_token", "write"],
+  ["ID-TOKEN", "write"],
+  ["prefix_id-token", "none"],
+] as const) {
+  const credential = { [key]: value, input_tokens: 7 };
+  const maskedCredential = { [key]: "[REDACTED]", input_tokens: 7 };
+  assert.deepEqual(redactJsonValue(credential), maskedCredential);
+  for (const layers of [1, 2]) {
+    const encode = (text: string): string =>
+      layers === 1 ? JSON.stringify(text) : JSON.stringify(JSON.stringify(text));
+    assert.equal(
+      redact(`Error: ${encode(JSON.stringify(credential))} preserved suffix`),
+      `Error: ${encode(JSON.stringify(maskedCredential))} preserved suffix`,
+    );
+  }
+}
+const duplicateStatusWithCredential =
+  '{ "status":"NOT_READY", "api_key":["SYNTHETIC-prefixless"], "status":"READY", ' +
+  '"summary":"fixture", "confidence":"verified", "evidence_sources":[], "caller_requests":[], "follow_ups":[] }';
+const duplicateStatusRedacted = redact(duplicateStatusWithCredential);
+assert.equal(
+  duplicateStatusRedacted,
+  duplicateStatusWithCredential.replace('["SYNTHETIC-prefixless"]', '"[REDACTED]"'),
+);
+assert.equal(parsePeerStatus(duplicateStatusRedacted).status, null);
+assert.ok(
+  parsePeerStatus(duplicateStatusRedacted).parser_warnings.some((warning) =>
+    warning.startsWith("status_candidate_rejected_duplicate_property:"),
+  ),
+);
+const benignContainerText =
+  'prefix {"input_tokens":[7],"output_tokens":{"count":2},"note":"read [brackets]"} suffix';
+assert.equal(redact(benignContainerText), benignContainerText);
+assert.equal(redact('prefix api_key:["SYNTHETIC-unclosed'), 'prefix api_key:"[REDACTED]"');
+assert.equal(
+  redact('prefix api_key:{"nested":["SYNTHETIC-mismatched"]] tail'),
+  'prefix api_key:"[REDACTED]"',
+);
+const unclosedInsideMessage = JSON.stringify({
+  message: 'prefix api_key:["SYNTHETIC-unclosed',
+  status: "NOT_READY",
+});
+assert.deepEqual(JSON.parse(redact(unclosedInsideMessage)), {
+  message: "prefix api_key:[REDACTED]",
+  status: "NOT_READY",
+});
+const manyContainerMessage = 'api_key=["SYNTHETIC-prefixless"] '.repeat(7_000);
+const manyContainerEncoded = JSON.stringify({ message: manyContainerMessage, status: "NOT_READY" });
+assert.ok(manyContainerEncoded.length >= 200_000);
+const manyContainerStarted = Date.now();
+assert.equal(
+  redact(manyContainerEncoded),
+  JSON.stringify({ message: "api_key=[REDACTED] ".repeat(7_000), status: "NOT_READY" }),
+);
+assert.ok(
+  Date.now() - manyContainerStarted < 1_000,
+  "many complete credential containers in one enclosing string must avoid rescanning its tail",
+);
+console.log("[smoke] textual_credential_container_redaction_test: PASS");
+
+const assignmentWhitespaceStarted = Date.now();
+for (const length of [50_000, 100_000, 200_000]) {
+  const whitespace = " ".repeat(length);
+  const missingDelimiter = `API_KEY${whitespace}!`;
+  assert.equal(redact(missingDelimiter), missingDelimiter);
+  assert.equal(
+    redact(`API_KEY${whitespace}=SYNTHETIC-prefixless-secret`),
+    `API_KEY${whitespace}=[REDACTED]`,
+  );
+  assert.equal(
+    redact(`API_KEY${whitespace}=["SYNTHETIC-prefixless-secret"]`),
+    `API_KEY${whitespace}="[REDACTED]"`,
+  );
+  const metric = `input_tokens${whitespace}=123`;
+  assert.equal(redact(metric), metric);
+}
+assert.ok(
+  Date.now() - assignmentWhitespaceStarted < 1_000,
+  "optional closing quotes must not create overlapping whitespace repetitions",
+);
+console.log("[smoke] credential_assignment_whitespace_redaction_test: PASS");
+
+const longNonsecretIdentifier = "prefix-".repeat(30_000);
+const identifierRedactionStarted = Date.now();
+assert.equal(redact(longNonsecretIdentifier), longNonsecretIdentifier);
+assert.ok(Date.now() - identifierRedactionStarted < 1_000);
+const syntheticJwt = ["A".repeat(36), "B".repeat(24), "C".repeat(24)].join(".");
+assert.equal(redact(`before ${syntheticJwt} after`), "before [REDACTED] after");
 
 // v4.5.44 / issue #215: GitHub App installation tokens migrated to a
 // stateless JWT shape (ghs_ prefix kept; body has base64url segments with
@@ -671,7 +941,15 @@ const usage = {
   cache_read_tokens: 8_000,
   cache_write_tokens: 2_000,
 };
-const est = cost.estimateCost(minimalConfig, "codex", usage);
+let est: ReturnType<typeof cost.estimateCost>;
+// Keep this synchronous pricing assertion on the same clock as the explicit
+// selectRate fixtures, then restore the native clock before any later work.
+mock.timers.enable({ apis: ["Date"], now: today });
+try {
+  est = cost.estimateCost(minimalConfig, "codex", usage);
+} finally {
+  mock.timers.reset();
+}
 assert.equal(est.tier_used, "promo", "small prompt + active promo selects promo tier");
 assert.equal(
   est.input_cost,
@@ -712,29 +990,6 @@ assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4.3"), true);
 assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4-latest"), false);
 assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4.20"), false);
 assert.equal(grokAllowlist.modelAcceptsReasoningEffort("grok-4.20-reasoning"), false);
-
-const dashboardSource = fs.readFileSync(
-  path.join(process.cwd(), "src", "dashboard", "server.ts"),
-  "utf8",
-);
-assert.match(dashboardSource, /console\.error\("dashboard_request_failed"\)/);
-assert.doesNotMatch(dashboardSource, /console\.error\(`dashboard_request_failed/);
-assert.doesNotMatch(dashboardSource, /safeErrorMessage\(error\)/);
-assert.match(
-  dashboardSource,
-  /function\s+escapeHtmlServer\(/,
-  "v4.3.5 / dashboard: server-rendered config/log paths must use a server-side HTML escape helper",
-);
-assert.match(
-  dashboardSource,
-  /\$\{escapeHtmlServer\(config\.data_dir\)\}/,
-  "v4.3.5 / dashboard: config.data_dir interpolation must be escaped before initial HTML render",
-);
-assert.match(
-  dashboardSource,
-  /\$\{escapeHtmlServer\(eventLog\.path\(\)\)\}/,
-  "v4.3.5 / dashboard: eventLog.path() interpolation must be escaped before initial HTML render",
-);
 
 const runtimeSmokeSource = fs.readFileSync("scripts/runtime-smoke.ts", "utf8");
 assert.match(
@@ -1557,7 +1812,7 @@ assert.equal(
   formatRecoveryFailed.round.rejected.at(-1)?.failure_class,
   "unparseable_after_recovery",
 );
-assert.equal(formatRecoveryFailed.round.peers[0]?.decision_quality, "needs_operator_review");
+assert.equal(formatRecoveryFailed.round.peers[0]?.decision_quality, "needs_agent_review");
 
 const moderationRecovered = await orchestrator.askPeers({
   task: "Verify compact moderation-safe retry handling.",
@@ -1940,10 +2195,14 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
   } finally {
     fs.realpathSync = originalRealpathSync;
   }
-  const failClosedOrch = new CrossReviewOrchestrator({
-    ...config,
-    data_dir: smokeTmpDir("orchestrator-evidence-fail-closed"),
-  });
+  const failClosedEvents: RuntimeEvent[] = [];
+  const failClosedOrch = new CrossReviewOrchestrator(
+    {
+      ...config,
+      data_dir: smokeTmpDir("orchestrator-evidence-fail-closed"),
+    },
+    (event) => failClosedEvents.push(event),
+  );
   const failClosedSession = await failClosedOrch.store.init(
     "orchestrator attachment failure fixture",
     "codex",
@@ -1958,7 +2217,7 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       error.code = "EACCES";
       throw error;
     }) as typeof failClosedOrch.store.readEvidenceAttachments;
-    await assert.doesNotReject(
+    await assert.rejects(
       () =>
         failClosedOrch.askPeers({
           session_id: failClosedSession.session_id,
@@ -1968,12 +2227,39 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
           // above); the retired identity used to be exempt from that check.
           caller: "codex",
           caller_status: "READY",
+          peers: ["claude", "gemini"],
         }),
-      "v4.4.6 / containment: orchestrator preflight paths must fail closed when attached-evidence reads throw",
+      { code: "EACCES", message: "simulated attachment read failure" },
+      "mandatory attachment reads must reject with the original native error before reservation",
+    );
+    const refusedState = failClosedOrch.store.read(failClosedSession.session_id);
+    assert.equal(refusedState.rounds.length, 0);
+    assert.equal(refusedState.in_flight, undefined);
+    assert.equal(refusedState.active_caller_evidence_submission_id, undefined);
+    assert.equal(
+      failClosedEvents.some((event) => event.type === "peer.call.started"),
+      false,
+      "unreadable mandatory evidence must cause zero provider dispatches",
     );
   } finally {
     failClosedOrch.store.readEvidenceAttachments = originalReadEvidenceAttachments;
   }
+  const restoredRetry = await failClosedOrch.askPeers({
+    session_id: failClosedSession.session_id,
+    task: "Neutral review fixture.",
+    draft: "No operational completion claim here.",
+    caller: "codex",
+    caller_status: "READY",
+    peers: ["claude", "gemini"],
+  });
+  assert.equal(restoredRetry.round.peers.length, 2);
+  const restoredState = failClosedOrch.store.read(failClosedSession.session_id);
+  assert.equal(restoredState.rounds.length, 1);
+  assert.equal(restoredState.in_flight, undefined);
+  assert.ok(
+    failClosedEvents.some((event) => event.type === "peer.call.started"),
+    "the restored reader must permit actual stub provider dispatch on immediate retry",
+  );
   console.log("[smoke] artifact_realpath_containment_test: PASS");
 }
 
@@ -5377,16 +5663,16 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
 }
 
 // v2.14.0 — readEvidenceAttachments respects max_attached_evidence_chars
-// total cap. With 4 attachments of 30k chars each (120k total) and a
-// 80k cap, the helper must return at most 80k of accumulated content,
-// truncating the LAST file that doesn't fit fully.
+// total cap. With 4 attachments of 30k chars each (120k total), an
+// lower 80k read cap rejects the previously admitted corpus; a 120k cap
+// transports every complete file.
 {
   const cfg = {
     ...loadConfig(),
     data_dir: smokeTmpDir("attached-evidence-cap"),
     prompt: {
       ...loadConfig().prompt,
-      max_attached_evidence_chars: 80_000,
+      max_attached_evidence_chars: 120_000,
     },
     budget: {
       ...loadConfig().budget,
@@ -5408,33 +5694,22 @@ assert.equal(Object.hasOwn(metrics.decision_quality, "undefined"), false);
       origin: "runtime_generated",
     });
   }
-  const resolved = capOrch.store.readEvidenceAttachments(sessionId, 80_000);
-  const totalChars = resolved.reduce((sum, a) => sum + a.content.length, 0);
-  assert.ok(totalChars <= 80_000, `total inlined content must respect 80k cap (got ${totalChars})`);
-  assert.equal(
-    resolved.length,
-    3,
-    "80k cap with 30k files should include two full files and one truncated file",
+  assert.throws(
+    () => capOrch.store.readEvidenceAttachments(sessionId, 80_000),
+    /evidence_transport_limit_exceeded: .*90000 characters; the configured limit is 80000/,
+    "an oversized corpus must be refused instead of silently dropping evidence",
   );
+  const resolved = capOrch.store.readEvidenceAttachments(sessionId, 120_000);
+  assert.equal(resolved.length, 4, "the configured cap must transport the entire admitted corpus");
   assert.deepEqual(
     resolved.map((attachment) => attachment.label),
-    ["att-0", "att-1", "att-2"],
+    ["att-0", "att-1", "att-2", "att-3"],
     "attachments should be returned in durable metadata order",
   );
-  const [firstAttachment, secondAttachment, thirdAttachment] = resolved;
-  assert.ok(firstAttachment && secondAttachment && thirdAttachment);
-  assert.equal(firstAttachment.content.length, 30_000, "first attachment should be complete");
-  assert.equal(secondAttachment.content.length, 30_000, "second attachment should be complete");
-  assert.equal(
-    thirdAttachment.content.length,
-    20_000,
-    "third attachment should fill the remaining cap",
-  );
-  assert.equal(
-    thirdAttachment.truncated,
-    true,
-    "third attachment must be explicitly marked truncated",
-  );
+  for (const attachment of resolved) {
+    assert.equal(attachment.content, big, "each attachment must arrive byte for byte");
+    assert.equal(attachment.truncated, false);
+  }
   console.log("[smoke] attached_evidence_cap_respected_test: PASS");
 }
 

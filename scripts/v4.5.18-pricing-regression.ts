@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { selectRate } from "../src/core/cost.js";
+import { mergeUsage, selectRate } from "../src/core/cost.js";
 import type { CostRateConfig } from "../src/core/types.js";
 
 const grok45OfficialRate: CostRateConfig = {
@@ -41,4 +41,41 @@ assert.match(
   /"grok-4\.7": \{[\s\S]*?"threshold_tokens": 200000,[\s\S]*?"input_extended_per_million": 4,[\s\S]*?"output_extended_per_million": 12,[\s\S]*?"cache_read_extended_per_million": 1/,
 );
 
-console.log("v4.5.18 pricing regression: 6/6 passed");
+// Missing native totals/reasoning/cache buckets must not become measured zero.
+assert.deepEqual(mergeUsage([{ input_tokens: 10, output_tokens: 9 }]), {
+  input_tokens: 10,
+  output_tokens: 9,
+});
+assert.deepEqual(
+  mergeUsage([
+    { input_tokens: 10, output_tokens: 9 },
+    { total_tokens: 0, reasoning_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 },
+  ]),
+  {
+    input_tokens: 10,
+    output_tokens: 9,
+    total_tokens: 0,
+    reasoning_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+  },
+);
+assert.deepEqual(
+  mergeUsage([
+    undefined,
+    { total_tokens: 11, reasoning_tokens: 3, cache_read_tokens: 4, cache_write_tokens: 5 },
+    { input_tokens: 2, output_tokens: 1 },
+    { total_tokens: 7, reasoning_tokens: 2, cache_read_tokens: 6, cache_write_tokens: 8 },
+  ]),
+  {
+    input_tokens: 2,
+    output_tokens: 1,
+    total_tokens: 18,
+    reasoning_tokens: 5,
+    cache_read_tokens: 10,
+    cache_write_tokens: 13,
+  },
+);
+assert.deepEqual(mergeUsage([undefined]), {});
+
+console.log("v4.5.18 pricing regression: 10/10 passed");

@@ -5,17 +5,22 @@
 // Atomic write pattern mirrors session-store.ts writeJson: tmp file via
 // `flag: "wx"` + crypto-random nonce + retry-on-Windows-EPERM. The
 // manifest is APPEND-ONLY at the entry level — every peer call adds one
-// row. Readers (dashboard, reports, FinOps) snapshot the file; the
+// row. Agent reports and accounting snapshot the file; the
 // runtime never deletes rows from it.
 //
-// Concurrency: appends within the same process are serialized via a
-// short re-read + write cycle. Cross-process appends on the same
-// session are NOT supported (same as the rest of session-store.ts —
-// SECURITY.md documents single-process-per-data-dir).
+// Concurrency: proper-lockfile serializes the complete read/append/write
+// transaction across local processes, including atomic-rename retries.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import lockfile from "proper-lockfile";
+import { safeErrorMessage } from "../security/redact.js";
+import {
+  removeAcquiredSessionLockDirectory,
+  type SessionLockDirectoryIdentity,
+  sessionLockDirectoryIdentity,
+} from "./session-store.js";
 import type { CacheManifest, CacheManifestEntry } from "./types.js";
 
 export const CACHE_SCHEMA_VERSION_DEFAULT = "v1";
@@ -30,6 +35,58 @@ function manifestPath(dataDir: string, sessionId: string): string {
     throw new Error(`invalid session_id for cache manifest: ${sessionId}`);
   }
   return path.resolve(dataDir, "sessions", sessionId, MANIFEST_FILENAME);
+}
+
+async function withManifestLock(file: string, write: () => Promise<void>): Promise<void> {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const lockfilePath = `${file}.lock`;
+  let releaseStarted = false;
+  let lockIdentity: SessionLockDirectoryIdentity | undefined;
+  const release = await lockfile.lock(file, {
+    realpath: false,
+    stale: 120_000,
+    update: 5_000,
+    retries: { retries: 30, factor: 1.5, minTimeout: 100, maxTimeout: 1_000 },
+    lockfilePath,
+    // Retry only the native removal syscall inside the library's single
+    // release. Acquisition and stale-lock cleanup keep their native behavior.
+    fs: {
+      ...fs,
+      rmdir: (directory: string, callback: fs.NoParamCallback): void => {
+        if (!releaseStarted || directory !== lockfilePath) {
+          fs.rmdir(directory, callback);
+          return;
+        }
+        void removeAcquiredSessionLockDirectory(directory, lockIdentity).then(
+          () => callback(null),
+          (error: NodeJS.ErrnoException) => callback(error),
+        );
+      },
+    },
+  });
+  let operationFailed = false;
+  let operationError: unknown;
+  try {
+    lockIdentity = sessionLockDirectoryIdentity(lockfilePath);
+    await write();
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+  releaseStarted = true;
+  try {
+    await release();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? "CACHE_MANIFEST_LOCK_RELEASE_FAILED";
+    const message =
+      `cache_manifest_lock_release_failed: ${code} at ${lockfilePath}: ${safeErrorMessage(error)}` +
+      (operationFailed ? `; operation_failed: ${safeErrorMessage(operationError)}` : "");
+    const failure = operationFailed
+      ? new AggregateError([operationError, error], message, { cause: error })
+      : new Error(message, { cause: error });
+    throw Object.assign(failure, { code, path: lockfilePath, file });
+  }
+  if (operationFailed) throw operationError;
 }
 
 async function writeJsonAtomic(file: string, data: unknown): Promise<void> {
@@ -94,15 +151,15 @@ export async function writeCacheManifest(
   sessionId: string,
   manifest: CacheManifest,
 ): Promise<void> {
-  await writeJsonAtomic(manifestPath(dataDir, sessionId), manifest);
+  const file = manifestPath(dataDir, sessionId);
+  await withManifestLock(file, () => writeJsonAtomic(file, manifest));
 }
 
 /**
  * Append a single entry to the session manifest. Lazily creates the
  * manifest if it does not exist. Each call performs (a) read-current,
- * (b) push entry, (c) atomic-write. This is sequential within a
- * process; concurrent calls in the same process must be awaited in
- * order by the caller.
+ * (b) push entry, (c) atomic-write while holding the manifest lock.
+ * Concurrent calls cannot overwrite another append during rename backoff.
  */
 export async function appendCacheManifestEntry(
   dataDir: string,
@@ -111,23 +168,33 @@ export async function appendCacheManifestEntry(
   cacheSchemaVersion: string = CACHE_SCHEMA_VERSION_DEFAULT,
 ): Promise<void> {
   const file = manifestPath(dataDir, sessionId);
-  const nowIso = new Date().toISOString();
-  let current: CacheManifest;
-  if (fs.existsSync(file)) {
-    try {
-      const raw = fs.readFileSync(file, "utf8");
-      current = JSON.parse(raw) as CacheManifest;
-    } catch {
-      // Corrupted manifest: rebuild from scratch with this entry as
-      // the sole row. Old contents are best-effort backed up next to
-      // the file with a `.corrupt-<ts>` suffix so an operator can
-      // forensically inspect.
-      const corrupt = `${file}.corrupt-${Date.now()}`;
+  await withManifestLock(file, async () => {
+    const nowIso = new Date().toISOString();
+    let current: CacheManifest;
+    if (fs.existsSync(file)) {
       try {
-        fs.renameSync(file, corrupt);
+        const raw = fs.readFileSync(file, "utf8");
+        current = JSON.parse(raw) as CacheManifest;
       } catch {
-        /* ignore */
+        // Corrupted manifest: rebuild from scratch with this entry as
+        // the sole row. Old contents are best-effort backed up next to
+        // the file with a `.corrupt-<ts>` suffix so an operator can
+        // forensically inspect.
+        const corrupt = `${file}.corrupt-${Date.now()}`;
+        try {
+          fs.renameSync(file, corrupt);
+        } catch {
+          /* ignore */
+        }
+        current = {
+          session_id: sessionId,
+          cache_schema_version: cacheSchemaVersion,
+          created_at: nowIso,
+          updated_at: nowIso,
+          entries: [],
+        };
       }
+    } else {
       current = {
         session_id: sessionId,
         cache_schema_version: cacheSchemaVersion,
@@ -136,16 +203,8 @@ export async function appendCacheManifestEntry(
         entries: [],
       };
     }
-  } else {
-    current = {
-      session_id: sessionId,
-      cache_schema_version: cacheSchemaVersion,
-      created_at: nowIso,
-      updated_at: nowIso,
-      entries: [],
-    };
-  }
-  current.entries.push(entry);
-  current.updated_at = nowIso;
-  await writeJsonAtomic(file, current);
+    current.entries.push(entry);
+    current.updated_at = nowIso;
+    await writeJsonAtomic(file, current);
+  });
 }

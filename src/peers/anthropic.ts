@@ -115,7 +115,7 @@ function usageFromAnthropic(usage: AnthropicUsage | null | undefined): TokenUsag
   const result: TokenUsage = {
     input_tokens: input,
     output_tokens: output,
-    total_tokens: (input ?? 0) + (output ?? 0),
+    total_tokens: (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0) + (output ?? 0),
   };
   if (cacheRead !== undefined && cacheRead !== null) result.cache_read_tokens = cacheRead;
   if (cacheWrite !== undefined && cacheWrite !== null) result.cache_write_tokens = cacheWrite;
@@ -250,7 +250,7 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
     const apiKey = this.config.api_keys.claude;
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY was not found in environment variables.");
     const Ctor = await loadAnthropicCtor();
-    return new Ctor({ apiKey, timeout: this.config.retry.timeout_ms });
+    return new Ctor({ apiKey, maxRetries: 0, timeout: this.config.retry.timeout_ms });
   }
 
   private throwIfRefusal(
@@ -261,12 +261,13 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
     if (message.stop_reason !== "refusal") return;
     const usage = usageFromAnthropic(message.usage);
     const estimatedCost = usage ? estimateCost(this.config, this.id, usage, this.model) : undefined;
-    // Anthropic documents the same two refusal billing paths for Fable 5 and
-    // Opus 5. A refusal before any output is not charged even though usage can
-    // report input tokens; a mid-stream refusal is charged for input and
-    // generated output. Treat provider-reported output tokens as the
-    // observable discriminator.
-    const billed = (usage?.output_tokens ?? 0) > 0;
+    const details = message.stop_details ?? undefined;
+    // The current native refusal contract bills these categories even before
+    // output. Other categories (including null) are unbilled before output;
+    // every mid-stream refusal remains billed. Anthropic can revise this list.
+    const billed =
+      (usage?.output_tokens ?? 0) > 0 ||
+      ["bio", "frontier_llm", "reasoning_extraction"].includes(details?.category ?? "");
     const cost: CostEstimate | undefined = billed
       ? estimatedCost
       : usage
@@ -280,7 +281,6 @@ export class AnthropicAdapter extends BasePeerAdapter implements PeerAdapter {
           }
         : undefined;
     const model = message.model ?? this.model;
-    const details = message.stop_details ?? undefined;
     context.emit({
       type: "provider.refusal",
       session_id: context.session_id,

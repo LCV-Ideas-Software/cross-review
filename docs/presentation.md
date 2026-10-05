@@ -6,7 +6,7 @@
 > reader; sections 4 to 7 go deeper into the technical aspects for IT
 > professionals and developers.
 >
-> State of the source/release target on 23/09/2026: `9.2.2`. The registry may
+> State of the source/release target on 04/10/2026: `10.0.0`. The registry may
 > lag behind the source during the workflow; check `npm view
 @lcv-ideas-software/cross-review version` for the publication and `server_info`
 > for the runtime version actually loaded. Reload the window after a package
@@ -58,6 +58,9 @@ calls to the official APIs of six AI providers and exposes that review flow as
 a set of tools. It is distributed as the npm package
 `@lcv-ideas-software/cross-review`, licensed under Apache-2.0.
 
+The protocol is **agent-to-agent**: authenticated MCP agents submit artifacts,
+receive peer decisions and read durable session state through the MCP tools.
+
 The six reviewing peers (the "sextet") are:
 
 | Reviewing peer | Provider   | Access                                      |
@@ -79,8 +82,8 @@ mistake.
 
 - **AI teams and agents** that want a quality gate before "closing" an artifact
   (code, document, opinion, specification).
-- **Developers** who use AI assistants and want to reduce the risk of accepting
-  a plausible but incorrect output.
+- **AI development agents** that review code and need to reduce the risk of
+  accepting a plausible but incorrect output.
 - **Those who integrate MCP** into their flows and want a ready-to-use
   multi-model consensus tool.
 
@@ -102,7 +105,7 @@ mistake.
 
 ```mermaid
 flowchart TD
-    A[Caller sends task + draft] --> B[Session opened]
+    A[Caller agent sends task + draft] --> B[Session opened]
     B --> C[Peer review round]
     C --> D{Convergence gate:<br/>unanimous READY?}
     D -- Yes --> E[Session converged + report]
@@ -133,7 +136,7 @@ For each peer, the quality of the verdict is classified:
 - **`format_warning`** — parsed, with non-blocking warnings;
 - **`recovered`** — recovered through format repair, a moderation-safe retry
   or limited sanitization;
-- **`needs_operator_review`** — no parseable status remained after recovery;
+- **`needs_agent_review`** — no parseable status remained after recovery;
 - **`failed`** — a provider failure or a model-selection failure blocked the
   peer.
 
@@ -233,8 +236,8 @@ closed if there was tampering. Legacy attachments are marked
   sensitive text by default.
 - **Observability** — one NDJSON log per process, plus session reports with
   convergence, failures, decision quality and costs.
-- **Local dashboard** — a read-only HTTP interface to inspect sessions,
-  events, reports, probes and metrics.
+- **Agent readbacks** — MCP tools expose sessions, events, reports, probes
+  and metrics to the calling agents.
 - **Model selection with no silent downgrade** — each peer is pinned to a
   canonical model; availability problems show up visibly instead of turning
   into a weaker model.
@@ -245,7 +248,7 @@ closed if there was tampering. Legacy attachments are marked
 
 > This section is aimed at IT professionals and developers.
 
-### 4.1. The ten runtime layers
+### 4.1. The nine runtime layers
 
 `cross-review` is an **API-first** implementation, organized in layers:
 
@@ -266,14 +269,12 @@ closed if there was tampering. Legacy attachments are marked
    decision quality, costs and recent events.
 9. **Observability** — writes one NDJSON log per process under
    `<data_dir>/logs`.
-10. **Dashboard** — local, read-only HTTP interface for sessions, events,
-    reports, probes and metrics.
 
 ### 4.2. The MCP protocol and the transport
 
-The server implements the **Model Context Protocol** and talks to the host
-(the MCP client) over **stdio**. It registers two binaries: the review server
-itself (`cross-review`) and the dashboard (`cross-review-dashboard`).
+The server implements the **Model Context Protocol** and talks to the agent's
+host (the MCP client) over **stdio**. The package registers one executable,
+`cross-review`, for the MCP server.
 
 Because real review rounds are intentionally **long-running**, the request
 timeout between host and server must be configured to **at least 300 seconds**.
@@ -336,12 +337,12 @@ Current canonical models (each one replaceable by an explicit
 | xAI/Grok     | `grok-4.7`               |
 | Perplexity   | `perplexity/kimi-k3`     |
 
-On Fable 5, the adapter omits the explicit `thinking` field, since adaptive
+On Fable 5.1, the adapter omits the explicit `thinking` field, since adaptive
 reasoning is automatic, and uses `output_config.effort` for the depth. The
-documented retention is 30 days, with no ZDR option. On GPT-5.6 Sol, `ultra` is
+documented retention is 30 days, with no ZDR option. On GPT-6 Astra, `ultra` is
 a mode of the Codex product, not a literal `reasoning.effort` of the Responses
 API; cross-review accepts that alias in the configuration and sends `max` to
-the API. Grok 4.6 accepts `low`/`medium`/`high`/`xhigh` and receives `xhigh`
+the API. Grok 4.7 accepts `low`/`medium`/`high`/`xhigh` and receives `xhigh`
 when the alias is used; Perplexity (`perplexity/kimi-k3`) receives `high`,
 the ceiling that model accepts (it rejects `xhigh` and `max` since 09/2026).
 Explicit overrides for earlier OpenAI families are normalized to the family's
@@ -383,18 +384,19 @@ session. The observed cache modes are: `auto` (OpenAI, DeepSeek, Grok and
 Perplexity, whose Agent API reports `cache_read_input_tokens`), `explicit`
 (Anthropic) and `implicit` (Gemini).
 
-`CROSS_REVIEW_DISABLE_CACHE=true` globally removes the cache controls the
-client can influence. It cannot force Gemini or DeepSeek to disable the
-implicit/automatic cache administered by the service.
+`CROSS_REVIEW_DISABLE_CACHE=true` disables client-controlled caching: Astra
+uses explicit mode without breakpoints, Anthropic omits cache control, and Grok
+omits its routing key. It cannot force Gemini, DeepSeek, Grok or Perplexity
+to disable automatic caching administered by the service.
 
-GPT-5.6 Sol uses `prompt_cache_options` in implicit mode with a 30-minute TTL
-and accounts for cache reads and writes separately. Grok 4.6 uses
+GPT-6 Astra uses `prompt_cache_options` in implicit mode with a 30-minute TTL
+when caching is enabled and accounts for reads and writes separately. Grok 4.7 uses
 `prompt_cache_key`, with retention administered by xAI and without inferring
 write tokens.
 
-### 4.8. The 30 MCP tools
+### 4.8. The MCP tools
 
-The server exposes 30 tools. Grouped by purpose:
+The server exposes the following tools, grouped by purpose:
 
 **Discovery and diagnostics**
 
@@ -503,8 +505,12 @@ Alternatively, through the GitHub Packages mirror:
 npm upgrade -g @lcv-ideas-software/cross-review --@lcv-ideas-software:registry=https://npm.pkg.github.com --ignore-scripts --allow-git=none --allow-remote=none
 ```
 
-The installation makes two binaries available: `cross-review` (the MCP server)
-and `cross-review-dashboard` (the local dashboard).
+The installation provides the `cross-review` executable for the agent's MCP
+host. Agents inspect sessions through `session_poll`, `session_events`,
+`session_metrics` and `session_report`.
+
+Before loading v10, remove retired `cross-review-dashboard` launch entries and
+the `dashboard_port` field from an existing `config.json`.
 
 ### Runtime policy in development
 

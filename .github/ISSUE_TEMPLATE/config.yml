@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Private security report
-    url: https://github.com/LCV-Ideas-Software
+    url: https://github.com/LCV-Ideas-Software/cross-review/security/advisories/new
     about: Report vulnerabilities privately. Do not disclose secrets or exploit details in public issues.
   - name: Ask a question (Discussions)
     url: https://github.com/LCV-Ideas-Software/cross-review/discussions/new?category=q-a

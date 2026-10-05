@@ -7,16 +7,83 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v10.00.00] — 05/10/2026
+
+### Removed
+
+- Remove the human-facing dashboard, its executable, configuration and development
+  command. Cross-review exposes only the agent-to-agent MCP protocol.
+
 ### Fixed
 
-- Raise the existing scoped `express-rate-limit` override to `ip-address` 10.7.1
-  and regenerate the npm lockfile for GHSA-j6r3-76f7-8jcv (LCV-244). The
-  official npm audit fix also raises transitive `fast-uri` to 3.1.8 for
-  GHSA-hrr3-gc8f-f4qj.
+- Include the previously merged scoped `ip-address` 10.7.1 override and
+  transitive `fast-uri` 3.1.8 remediation in this release (LCV-244).
 
-- Raise the existing scoped `express-rate-limit` override to `ip-address` 10.5.1
-  and regenerate the npm lockfile, addressing GHSA-rpw4-54j3-4h4q and
-  GHSA-2vr4-cq9g-pvrc. Update the matching smoke contract.
+- Make proposed submission preflights reject own-draft artifact references and
+  replace prior automatic evidence snapshots just as a real round does (CROSREV-55).
+- Transport complete evidence through the advertised 200,000-character ceiling;
+  refuse an oversized corpus explicitly instead of truncating it (CROSREV-56).
+- Enforce the same aggregate ceiling before manual evidence attachments commit,
+  with integrity-verified duplicate handling and atomic concurrent admission.
+- Disable nested SDK retries, validate the configured model in native probes,
+  and use native system instructions and request timeouts for Gemini.
+- Honor OpenAI's native explicit cache-disable contract and count Anthropic cache
+  tokens in total telemetry. Preserve native Grok reported billing totals.
+- Account for the documented Anthropic refusal categories charged before output;
+  preserve native DeepSeek completion identifiers, terminal status and usage.
+- Preserve literal thinking tags in structured Perplexity output; an empty
+  DeepSeek message remains empty instead of becoming a provider JSON draft.
+- Serialize cache-manifest updates with the existing native filesystem lock.
+- Retry transient native Windows lock-directory release failures within the
+  existing lock operation, verify directory identity and surface exhausted failures.
+- Apply the same bounded release handling to cache-manifest locks and retain
+  both write and release errors when they occur together.
+- Preserve unresolved durable-job readback after both initial-operation and
+  settlement failures, retaining the original diagnostics.
+- Apply the existing task-input ceiling consistently and honor the configured
+  mode-specific round default when MCP callers omit `max_rounds`.
+- Treat signed non-zero command exit codes as failures during evidence
+  admission and requester reverification.
+- Refuse new recovery-call reservations, fallback dispatch and requester
+  promotions after durable cancellation, using the existing session controls.
+- Preserve model-mismatch and provider parser diagnostics during evidence
+  judging, refuse disabled judges and report the resolved circular round limit.
+- Reuse recovery-round votes only for the same recorded artifact and evidence
+  context; historical votes without a matching native binding remain readable.
+- Distinguish inspection timestamps from release-date assertions and stop
+  redundant evidence-frame scanning when no closing marker exists.
+- Preserve benign evidence identifiers at native key-prefix boundaries and
+  scan private-key markers without repeated whole-suffix searches.
+- Keep original parser diagnostics without letting them veto a separately
+  recovered, complete and grounded READY decision; current errors still block.
+- Harden credential redaction under the repository's private security process.
+- Strengthen native token-file safeguards before credentials are loaded or written.
+- Require owner capability verification before saving `session_report` and emit
+  `needs_agent_review` for unparseable decisions; old disk values remain readable.
+- Refuse unverifiable active evidence, isolate bounded historical snapshots, and
+  reserve evidence admission under the native session lock before dispatch.
+- Honor native millisecond retry hints and refuse retries for enforced account
+  spend limits; preserve absent optional telemetry as unknown.
+- Link private security reports directly to this repository's native GitHub form.
+- Keep the promotional-cost smoke fixture independent of the wall-clock date
+  with Node's native scoped Date mock.
+
+### Changed
+
+- Use DeepSeek's official Responses API with native JSON Schema review output,
+  the configured model and effort, and complete stateless context. Keep terminal
+  failures refused and reasoning text separate from final assistant output.
+- Update official OpenAI, Anthropic, Google and MCP SDKs and compatible tooling.
+  Retain TypeScript 6 while the native TypeScript 7 compiler lacks the API required
+  by the official typescript-eslint peer contract.
+- Reinforce untrusted artifact instructions in every provider's native system
+  channel and preserve complete evidence inside adaptive Markdown fences.
+- Describe estimate-based financial admission and provider-enforced limitations
+  explicitly in runtime metadata and current documentation.
+- Clarify literal citation rules for encoded JSON evidence and removal diffs,
+  preserving strict same-artifact custody and post-image checks.
+- Advertise the external-provider behavior of both paid evidence-judge tools
+  through native MCP annotations.
 
 ## [v09.02.02] — 23/09/2026
 

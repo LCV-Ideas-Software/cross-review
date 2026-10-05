@@ -962,6 +962,91 @@ const regressions: Array<{ name: string; run: () => void | Promise<void> }> = [
     },
   },
   {
+    name: "poll-preserves-unsettled-durable-owner-for-both-native-settlement-error-shapes",
+    run: () => {
+      const state: Parameters<typeof serverModule.synthesizeDurableJob>[0] = {
+        session_id: sessionId,
+        updated_at: startedAt,
+        in_flight: {
+          round: 3,
+          peers: ["claude", "gemini"],
+          started_at: startedAt,
+          status: "running",
+        },
+        control: {
+          status: "running",
+          job_id: jobId,
+          owner_pid: process.pid,
+          updated_at: startedAt,
+        },
+      };
+      // Success followed by failed cleanup prefixes the marker. A rejected
+      // native operation followed by failed cleanup retains the original
+      // error before it, as in the actual retained ELOCKED panel failure.
+      for (const error of [
+        "background_job_settlement_failed: Lock file is already being held",
+        "Lock file is already being held; background_job_settlement_failed: Lock file is already being held",
+      ]) {
+        const failed: serverModule.JobStatus = {
+          job_id: jobId,
+          kind: "ask_peers",
+          session_id: sessionId,
+          status: "failed",
+          started_at: startedAt,
+          completed_at: startedAt,
+          error,
+        };
+        const synthetic = serverModule.synthesizeDurableJob(state, [failed]);
+        assert.ok(synthetic, "unsettled durable records must remain observable in either branch");
+        assert.equal(synthetic.source, "durable_session");
+        assert.equal(synthetic.status, "running");
+        assert.equal(synthetic.job_id, jobId);
+        assert.equal(synthetic.round, 3);
+        assert.deepEqual(synthetic.peers, ["claude", "gemini"]);
+        const compact = serverModule.compactJobsForPoll([failed], synthetic, jobId);
+        assert.equal(compact.length, 1);
+        assert.equal(compact[0]?.kind, "durable_session_round");
+        assert.equal(compact[0]?.status, "running");
+        assert.equal(compact[0]?.error, error, "the original and cleanup diagnostics stay intact");
+        assert.equal(failed.status, "failed", "projection must not rewrite the actual job result");
+        assert.equal(failed.error, error);
+        assert.equal(
+          serverModule.synthesizeDurableJob(
+            { ...state, outcome: "converged", outcome_reason: "unanimous_ready" },
+            [failed],
+          ),
+          null,
+          "a sealed terminal session cannot be projected as running",
+        );
+        assert.equal(
+          serverModule.synthesizeDurableJob({ session_id: sessionId, updated_at: startedAt }, [
+            failed,
+          ]),
+          null,
+          "a historical diagnostic does not recreate cleared durable work",
+        );
+        assert.equal(
+          serverModule.synthesizeDurableJob(state, [{ ...failed, status: "running" }]),
+          null,
+          "a real process-local running job remains the primary projection",
+        );
+      }
+      const ordinaryFailure: serverModule.JobStatus = {
+        job_id: jobId,
+        kind: "ask_peers",
+        session_id: sessionId,
+        status: "failed",
+        started_at: startedAt,
+        error: "ordinary provider failure without a settlement failure",
+      };
+      assert.equal(
+        serverModule.synthesizeDurableJob(state, [ordinaryFailure]),
+        null,
+        "an unrelated error must not receive the settlement-only exception",
+      );
+    },
+  },
+  {
     name: "interrupted-recovery-fails-closed-on-unknown-provider-spend",
     run: async () => {
       const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cross-review-v454-ledger-recovery-"));

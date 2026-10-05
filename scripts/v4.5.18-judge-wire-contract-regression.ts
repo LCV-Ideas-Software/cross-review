@@ -199,21 +199,26 @@ const regressions: Regression[] = [
     },
   },
   {
-    name: "DeepSeek judge uses max_tokens, enabled thinking, and supported high effort",
+    name: "DeepSeek judge uses native Responses max_output_tokens and supported high effort",
     run: async () => {
       const adapter = new DeepSeekAdapter(fixtureConfig());
       let payload: Record<string, unknown> | undefined;
       setClient(adapter, {
-        chat: {
-          completions: {
-            create: async (body: Record<string, unknown>) => {
-              payload = body;
-              return {
-                model: adapter.model,
-                choices: [{ finish_reason: "stop", message: { content: JUDGE_JSON } }],
-                usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-              };
-            },
+        responses: {
+          create: async (body: Record<string, unknown>) => {
+            payload = body;
+            return {
+              status: "completed",
+              model: adapter.model,
+              output: [
+                {
+                  type: "message",
+                  role: "assistant",
+                  content: [{ type: "output_text", text: JUDGE_JSON }],
+                },
+              ],
+              usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+            };
           },
         },
       });
@@ -225,14 +230,17 @@ const regressions: Regression[] = [
       );
 
       assert.equal(payload?.model, "deepseek-v4-pro");
-      assert.equal(payload?.max_tokens, 2_048);
-      assert.deepEqual(payload?.thinking, { type: "enabled" });
-      assert.equal(
-        payload?.reasoning_effort,
-        "high",
-        "DeepSeek V4 Pro supports high|max; shared medium must map to its lower supported tier",
+      assert.equal(payload?.max_output_tokens, 2_048);
+      assert.deepEqual(
+        payload?.reasoning,
+        { effort: "high" },
+        "DeepSeek native Responses preserves the documented shared medium to high normalization",
       );
-      assert.equal(Object.hasOwn(payload ?? {}, "max_output_tokens"), false);
+      assert.equal(typeof payload?.instructions, "string");
+      assert.equal(payload?.text, undefined, "judge generation must not receive the review schema");
+      assert.equal(Object.hasOwn(payload ?? {}, "max_tokens"), false);
+      assert.equal(payload?.thinking, undefined);
+      assert.equal(payload?.reasoning_effort, undefined);
     },
   },
   {

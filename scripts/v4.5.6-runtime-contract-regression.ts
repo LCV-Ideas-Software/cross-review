@@ -23,7 +23,7 @@ import {
 } from "../src/core/orchestrator.js";
 import { maxOutputTokensForPeer } from "../src/core/output-budget.js";
 import { SessionStore } from "../src/core/session-store.js";
-import { parsePeerStatus, statusJsonSchema } from "../src/core/status.js";
+import { parsePeerStatus, portableStatusJsonSchema, statusJsonSchema } from "../src/core/status.js";
 import type {
   AppConfig,
   CostEstimate,
@@ -103,14 +103,6 @@ function completedResponsesResult(model: string): Record<string, unknown> {
     output_text: READY,
     model,
     usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
-  };
-}
-
-function completedChatResult(model: string): Record<string, unknown> {
-  return {
-    model,
-    choices: [{ index: 0, finish_reason: "stop", message: { content: READY } }],
-    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
   };
 }
 
@@ -420,18 +412,40 @@ const regressions: Regression[] = [
       Object.defineProperty(deepseek, "client", {
         configurable: true,
         value: async () => ({
-          chat: {
-            completions: {
-              create: async (body: Record<string, unknown>) => {
-                deepSeekRequest = body;
-                return completedChatResult(deepseek.model);
-              },
+          responses: {
+            create: async (body: Record<string, unknown>) => {
+              deepSeekRequest = body;
+              return {
+                ...completedResponsesResult(deepseek.model),
+                output: [
+                  {
+                    type: "message",
+                    role: "assistant",
+                    content: [{ type: "output_text", text: READY }],
+                  },
+                ],
+              };
             },
           },
         }),
       });
-      await deepseek.call("fixture", context());
-      assert.deepEqual(deepSeekRequest?.response_format, { type: "json_object" });
+      const deepSeekResult = await deepseek.call("fixture", context());
+      assert.equal(deepSeekResult.text, READY);
+      assert.equal(deepSeekResult.model_reported, deepseek.model);
+      assert.equal(deepSeekResult.model_match, true);
+      assert.deepEqual(deepSeekResult.usage, {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+      });
+      assert.deepEqual(deepSeekRequest?.text, {
+        format: {
+          type: "json_schema",
+          name: "cross_review_status",
+          schema: portableStatusJsonSchema,
+        },
+      });
+      assert.equal(deepSeekRequest?.response_format, undefined);
     },
   },
   {
@@ -624,14 +638,14 @@ const regressions: Regression[] = [
             input_tokens: 15,
             output_tokens: 25_100,
             total_tokens: 25_115,
-            reasoning_tokens: 0,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
           },
           totalCost: 0.753075,
           unpricedAttempts: undefined,
         },
       );
+      assert.equal(result.usage?.reasoning_tokens, undefined);
+      assert.equal(result.usage?.cache_read_tokens, undefined);
+      assert.equal(result.usage?.cache_write_tokens, undefined);
     },
   },
   {
@@ -1007,12 +1021,12 @@ const regressions: Regression[] = [
             output_tokens: 20_125,
             total_tokens: 20_140,
             reasoning_tokens: 120,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
           },
           unpricedAttempts: undefined,
         },
       );
+      assert.equal(result.usage?.cache_read_tokens, undefined);
+      assert.equal(result.usage?.cache_write_tokens, undefined);
     },
   },
   {

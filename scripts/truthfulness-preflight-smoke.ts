@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 
 import { checkConvergence } from "../src/core/convergence.js";
@@ -9,6 +10,69 @@ import {
 } from "../src/core/orchestrator.js";
 import { parsePeerStatus } from "../src/core/status.js";
 import type { PeerResult } from "../src/core/types.js";
+
+// A literal custody-matched quote remains contradictory when its process
+// returned a signed nonzero exit, even if it printed a passed-count summary.
+for (const exitCode of [
+  "0",
+  "+0",
+  "+1",
+  "-1",
+  "-1073741819",
+  "0".repeat(1_000),
+  `+${"0".repeat(1_000)}`,
+  `-${"0".repeat(1_000)}`,
+  "9".repeat(1_000),
+  `+${"9".repeat(1_000)}`,
+  `-${"9".repeat(1_000)}`,
+]) {
+  const content = `COMMAND: npm test\nEXIT_CODE: ${exitCode}\nTests 74 passed (74)`;
+  const relativePath = "evidence/synthetic-signed-exit.txt";
+  const sha256 = crypto.createHash("sha256").update(content).digest("hex");
+  const structured = {
+    status: "READY" as const,
+    summary: "No blocking objections remain.",
+    confidence: "verified" as const,
+    evidence_sources: [
+      `Attachment: ${relativePath}\nsha256=${sha256}\nArtifact quote: "${content}"`,
+    ],
+    caller_requests: [],
+    follow_ups: [],
+  };
+  const result = groundReadyPeerEvidence(
+    {
+      peer: "claude",
+      provider: "synthetic",
+      model: "synthetic",
+      status: "READY",
+      structured,
+      text: JSON.stringify(structured),
+      raw: { synthetic_only: true },
+      latency_ms: 1,
+      attempts: 1,
+      parser_warnings: [],
+      decision_quality: "clean",
+    },
+    {
+      artifactText: "Review completed work: npm test completed with 74 passed.",
+      attachedEvidenceText: "",
+      attachmentRefs: [relativePath],
+      callerSubmittedAttachments: [{ relative_path: relativePath, sha256, content }],
+      requirePeerSubmittedCorroboration: true,
+      runtimeFacts: {},
+    },
+  );
+  const successful = Number(exitCode) === 0;
+  assert.equal(
+    result.grounded,
+    successful,
+    `signed exit ${exitCode} must constrain grounded READY`,
+  );
+  assert.equal(result.result.status, successful ? "READY" : "NEEDS_EVIDENCE");
+  if (!successful) {
+    assert.ok(result.failed_predicates.includes("artifact_claims_match_caller_evidence"));
+  }
+}
 
 // v4.3.9: extracted from scripts/smoke.ts so truthfulness preflight can be
 // verified independently of the full smoke suite.
@@ -27,6 +91,93 @@ import type { PeerResult } from "../src/core/types.js";
       grok: "grok-4.3",
     },
   };
+
+  for (const initialDraft of [
+    "The current cross-review runtime is v4.2.1; audit captured_at=2026-05-22.",
+    "The current cross-review runtime v4.2.1 was inspected on 2026-05-22.",
+    "The current cross-review runtime v4.2.1 was released on 2026-05-21; audit captured_at=2026-05-22.",
+    'Current cross-review runtime v4.2.1: {"release_date":"2026-05-21","captured_at":"2026-05-22"}.',
+    "The current cross-review runtime v4.2.1 release date is 2026-05-21.",
+    "2026-05-21 is the release date of the current cross-review runtime v4.2.1.",
+    "O cross-review v4.2.1 atual foi inspecionado em 2026-05-22.",
+    "O cross-review v4.2.1 atual foi lançado em 2026-05-21; audit captured_at=2026-05-22.",
+    "O cross-review v4.2.1 atual tem data de lançamento: 2026-05-21.",
+    "2026-05-21 é a data de lançamento do cross-review v4.2.1 atual.",
+  ]) {
+    const result = truthfulnessPreflight({
+      task: "Review the current runtime snapshot.",
+      initialDraft,
+      runtimeFacts,
+      attachmentsPresent: false,
+    });
+    assert.equal(
+      result.pass,
+      true,
+      `inspection/capture dates must not claim a release date: ${initialDraft}`,
+    );
+    assert.deepEqual(result.contradictions, []);
+  }
+  for (const initialDraft of [
+    "The current cross-review runtime v4.2.1 release_date=2026-05-22.",
+    "The current cross-review runtime v4.2.1 was released on 2026-05-22.",
+    "The current cross-review runtime v4.2.1 release date is 2026-05-22; audit captured_at=2026-05-21.",
+    'Current cross-review runtime v4.2.1: {"release_date":"2026-05-22","captured_at":"2026-05-21"}.',
+    "2026-05-22 is the release date of the current cross-review runtime v4.2.1.",
+    "O cross-review v4.2.1 atual foi lançado em 2026-05-22.",
+    "O cross-review v4.2.1 atual foi lancado em 2026-05-22.",
+    "O cross-review v4.2.1 atual tem data de lançamento: 2026-05-22.",
+    "2026-05-22 é a data de lançamento do cross-review v4.2.1 atual.",
+  ]) {
+    const result = truthfulnessPreflight({
+      task: "Review the current runtime snapshot.",
+      initialDraft,
+      runtimeFacts,
+      attachmentsPresent: false,
+    });
+    assert.equal(
+      result.pass,
+      false,
+      `a real contradictory release-date assertion remains blocked: ${initialDraft}`,
+    );
+    assert.ok(result.issue_classes.includes("runtime_contradiction"));
+    assert.ok(result.contradictions.some((item) => item.includes("release_date claim 2026-05-22")));
+  }
+
+  for (const version of ["10.0.0", "10.12.345"]) {
+    const facts = { ...runtimeFacts, runtime_version: version };
+    const wrongVersion = version === "10.0.0" ? "10.1.0" : "10.12.346";
+    const healthy = truthfulnessPreflight({
+      task: "Review the current runtime snapshot.",
+      initialDraft: `The current cross-review v${version} was inspected on 2026-05-22; release_date=2026-05-21.`,
+      runtimeFacts: facts,
+      attachmentsPresent: false,
+    });
+    assert.equal(healthy.pass, true, "multi-digit semantic version components remain admitted");
+    assert.equal(healthy.current_state_claim_matched, true);
+    for (const initialDraft of [
+      `The current cross-review v${wrongVersion} release_date=2026-05-21.`,
+      `The current cross-review v${version} release_date=2026-05-22.`,
+    ]) {
+      const result = truthfulnessPreflight({
+        task: "Review the current runtime snapshot.",
+        initialDraft,
+        runtimeFacts: facts,
+        attachmentsPresent: false,
+      });
+      assert.equal(result.pass, false, "multi-digit version/date contradictions remain blocked");
+      assert.equal(result.current_state_claim_matched, true);
+      assert.ok(result.issue_classes.includes("runtime_contradiction"));
+    }
+  }
+  const historicalMultiDigit = truthfulnessPreflight({
+    task: "Review this historical runtime assertion.",
+    initialDraft: "When the audit began, cross-review was v10.12.345.",
+    runtimeFacts: { ...runtimeFacts, runtime_version: "10.12.345" },
+    attachmentsPresent: false,
+  });
+  assert.equal(historicalMultiDigit.pass, false);
+  assert.equal(historicalMultiDigit.historical_state_claim_matched, true);
+  assert.ok(historicalMultiDigit.issue_classes.includes("unsupported_historical_claim"));
 
   const contradictedByRuntime = truthfulnessPreflight({
     task: "Audit all sessions generated with the current cross-review version.",

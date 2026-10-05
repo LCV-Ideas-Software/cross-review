@@ -46,7 +46,11 @@ not satisfy that correlation.
 
 Within command records, an explicit non-zero `EXIT_CODE`, a positive failure
 count or a failure conclusion takes precedence over words such as `passed` or
-`success`. Explicit non-execution in English or Portuguese also fails closed;
+`success`. Signed integer exit codes follow the same rule: `-1` and native
+Windows negative failure codes cannot be turned into success by a positive
+test-count label; `0` and `+0` are zero. This parses caller-submitted records
+and does not authenticate execution. Explicit non-execution in English or
+Portuguese also fails closed;
 modal failure and skipped runs are non-execution too, and an unrelated
 `ok`/`green` cannot reverse them. Inline evidence must bind the command and its
 result in the same raw line or structured command block. Conflicting executions
@@ -125,6 +129,11 @@ workflow/run/session start; a suggestive attachment filename or a current
 the artifact cannot temporalize a current-only value: timing and value must
 occur in the same historically scoped record.
 
+An inspection or capture timestamp is not a release-date assertion. Current
+release-date contradictions require an explicit release-date frame, such as
+`release_date=2026-10-05` or an actual released-on claim; a runtime
+being inspected on that date does not change its recorded release date.
+
 From v4.3.7 onward, that declaration is no longer a blank cheque for
 references to separate artifacts. If `task`, `initial_draft`, or the
 structured `evidence` text explicitly points to an external evidence/log
@@ -181,11 +190,37 @@ Artifact quote: "Tests 74 passed (74)"
 The block shows one decoded string; raw JSON encodes the two line breaks as
 `\n`.
 
+That decoding refers to the response JSON envelope. A reviewer may decode a
+JSON attachment for analysis, but the citation must copy a literal substring
+of the physical persisted text: a JSON array's visible backslashes and quote
+escapes remain part of its evidence. Preserve whitespace, punctuation, Unicode
+and HTML entities exactly, then encode the unchanged citation once in the
+response JSON. Decoded values, pretty-printed JSON, normalized spaces, HTML
+entity conversion and an added inner escape layer can change the cited bytes
+and fail grounding even when the interpretation is correct.
+
 Use the persisted path, the complete 64-character lowercase SHA-256, and a
 literal of at least 12 characters from that same attachment. `Artifact quote`
 is the last line; rationale does not belong after it. For multiple sources,
 emit multiple array items rather than concatenating them. The field remains
 `string[]` for client compatibility.
+
+When withdrawing a checklist ask, place `Checklist-Item: <id>` before the
+`Attachment` line. Keep the three citation lines together and leave checklist
+metadata, rationale and any neutral account of sensitive context outside the
+literal quote. Cite permitted substrings of the already-redacted attachment;
+never reconstruct removed secrets. Every source must independently match its
+own path, digest and literal. One valid citation does not excuse another
+invented or reformatted source.
+
+For a removal or replacement, cite one contiguous raw-diff excerpt containing
+the relevant hunk/file header or added/context post-image, preferably both the
+removed and added lines. Removed code alone cannot establish the submitted
+post-image. For example, a literal excerpt containing `@@ -1 +1 @@`,
+`-const insecureMode = true;` and `+const insecureMode = false;` preserves the
+change's context. Keep the actual diff markers and line breaks; joining
+non-contiguous old/new snippets invents an excerpt that the artifact never
+contained.
 
 The quote should be the smallest sufficient raw excerpt, normally at most 500
 characters. The schema permits up to 2,500 characters for the complete item and

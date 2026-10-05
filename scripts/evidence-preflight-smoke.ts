@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { loadConfig } from "../src/core/config.js";
 import {
@@ -12,8 +13,60 @@ import {
   CrossReviewOrchestrator,
   evidenceConflictIndexDiagnostics,
   evidencePreflight,
+  extractInlineRawEvidence,
 } from "../src/core/orchestrator.js";
 import type { EvidenceChecklistItem, PeerResult } from "../src/core/types.js";
+
+const closedEmbedded = evidencePreflight({
+  task: "Review the literal evidence attachment a.txt.",
+  structuredEvidence: "BEGIN FILE a.txt\nliteral synthetic body\nEND FILE a.txt",
+  attachmentsPresent: false,
+});
+assert.equal(closedEmbedded.pass, true);
+assert.deepEqual(closedEmbedded.unattached_evidence_references, []);
+for (const structuredEvidence of [
+  "BEGIN FILE a.txt\nliteral synthetic body",
+  "BEGIN FILE a.txt\nliteral synthetic body\nEND FILE b.txt",
+  "BEGIN FILE a.txt\nEND FILE a.txt",
+]) {
+  const result = evidencePreflight({
+    task: "Review the literal evidence attachment a.txt.",
+    structuredEvidence,
+    attachmentsPresent: false,
+  });
+  assert.equal(
+    result.pass,
+    false,
+    "unclosed, mismatched or empty framing cannot invent an attachment",
+  );
+  assert.deepEqual(result.unattached_evidence_references, ["a.txt"]);
+}
+const laterClosedEmbedded = evidencePreflight({
+  task: "Review the literal evidence attachment b.txt.",
+  structuredEvidence:
+    "BEGIN FILE a.txt\nwrong first body\nEND FILE wrong.txt\nBEGIN FILE b.txt\nliteral second body\nEND FILE b.txt",
+  attachmentsPresent: false,
+});
+assert.equal(
+  laterClosedEmbedded.pass,
+  true,
+  "a mismatched ended block must not hide a later properly closed block",
+);
+const unclosedLine = "BEGIN FILE a.txt\n";
+const unclosedFraming = unclosedLine.repeat(Math.floor(200_000 / unclosedLine.length));
+const unclosedBegan = performance.now();
+const boundedUnclosed = evidencePreflight({
+  task: "Review the literal evidence attachment a.txt.",
+  structuredEvidence: unclosedFraming,
+  attachmentsPresent: false,
+});
+const unclosedElapsed = performance.now() - unclosedBegan;
+assert.equal(boundedUnclosed.pass, false);
+assert.deepEqual(boundedUnclosed.unattached_evidence_references, ["a.txt"]);
+assert.ok(
+  unclosedElapsed < 1_000,
+  `bounded native evidence framing took ${unclosedElapsed.toFixed(1)}ms`,
+);
 
 // v3.5.0 (CRV2-4) - evidence_preflight pure-function behavioral matrix.
 //
@@ -266,6 +319,50 @@ assert.equal(
   false,
   "EXIT_CODE != 0 must override passed/success words in the same COMMAND block",
 );
+
+for (const exitCode of [
+  "0",
+  "+0",
+  "+1",
+  "-1",
+  "-1073741819",
+  "0".repeat(1_000),
+  `+${"0".repeat(1_000)}`,
+  `-${"0".repeat(1_000)}`,
+  "9".repeat(1_000),
+  `+${"9".repeat(1_000)}`,
+  `-${"9".repeat(1_000)}`,
+]) {
+  const expectedPass = Number(exitCode) === 0;
+  const record = `COMMAND: npm test\nEXIT_CODE: ${exitCode}\nTests 74 passed (74)`;
+  for (const channel of ["inline", "structured", "attached"] as const) {
+    const result = evidencePreflight({
+      task: "Review completed work: npm test completed with 74 passed.",
+      ...(channel === "inline"
+        ? { initialDraft: `\`\`\`text\n${record}\n\`\`\`` }
+        : channel === "structured"
+          ? { structuredEvidence: record }
+          : { attachedEvidenceText: record }),
+      attachmentsPresent: channel === "attached",
+    });
+    assert.equal(
+      result.pass,
+      expectedPass,
+      `${channel} signed EXIT_CODE ${exitCode} must preserve zero success and veto nonzero success claims`,
+    );
+  }
+  assert.equal(
+    extractInlineRawEvidence(`EXIT_CODE: ${exitCode}`),
+    `EXIT_CODE: ${exitCode}`,
+    "raw signed exit lines must survive extraction even without a separate passed-count marker",
+  );
+  const commandResult = evidencePreflight({
+    task: "Review completed work: npm run check passed.",
+    structuredEvidence: `COMMAND: npm run check\nEXIT_CODE: ${exitCode}\nSTDOUT: Checks passed`,
+    attachmentsPresent: false,
+  });
+  assert.equal(commandResult.pass, expectedPass, `signed command exit ${exitCode} must be checked`);
+}
 
 const conflictingRunsOfSameCommand = evidencePreflight({
   task: "Review completed work: npm run lint passed.",

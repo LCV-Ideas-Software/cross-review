@@ -16,9 +16,7 @@ const DOCS = {
   gemini: "https://ai.google.dev/gemini-api/docs/models",
   deepseek: "https://api-docs.deepseek.com/updates",
   grok: "https://docs.x.ai/developers/model-capabilities/text/reasoning",
-  // v4.6.0: Perplexity Agent API model catalog (`provider/model` ids with
-  // pricing). Sonar Chat Completions retires on 27/09/2026; the runtime
-  // keeps the documented pin without a live `models.list` probe.
+  // Agent API model catalog (`provider/model` ids with pricing).
   perplexity: "https://docs.perplexity.ai/docs/agent-api/models",
 } satisfies Record<PeerId, string>;
 
@@ -166,7 +164,11 @@ async function openAIModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.codex;
   if (!apiKey) return [];
   const Ctor = await loadOpenAICtor();
-  const list = await new Ctor({ apiKey }).models.list();
+  const list = await new Ctor({
+    apiKey,
+    timeout: config.retry.timeout_ms,
+    maxRetries: 0,
+  }).models.list();
   return list.data
     .map((model) => ({
       id: model.id,
@@ -180,26 +182,32 @@ async function anthropicModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.claude;
   if (!apiKey) return [];
   const Ctor = await loadAnthropicCtor();
-  const client = new Ctor({ apiKey, timeout: config.retry.timeout_ms });
-  const page = await client.models.list({ limit: 100 });
-  return page.data.map((model) => ({
-    id: model.id,
-    display_name: model.display_name,
-    source: "api" as const,
-    metadata: {
-      created_at: model.created_at,
-      max_input_tokens: model.max_input_tokens,
-      max_tokens: model.max_tokens,
-      capabilities: model.capabilities,
-    },
-  }));
+  const client = new Ctor({ apiKey, timeout: config.retry.timeout_ms, maxRetries: 0 });
+  const candidates: ModelCandidate[] = [];
+  for await (const model of client.models.list({ limit: 100 })) {
+    candidates.push({
+      id: model.id,
+      display_name: model.display_name,
+      source: "api",
+      metadata: {
+        created_at: model.created_at,
+        max_input_tokens: model.max_input_tokens,
+        max_tokens: model.max_tokens,
+        capabilities: model.capabilities,
+      },
+    });
+  }
+  return candidates;
 }
 
 async function geminiModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.gemini;
   if (!apiKey) return [];
   const genai = await loadGenaiModule();
-  const pager = await new genai.GoogleGenAI({ apiKey }).models.list({
+  const pager = await new genai.GoogleGenAI({
+    apiKey,
+    httpOptions: { timeout: config.retry.timeout_ms },
+  }).models.list({
     config: { pageSize: 1000 },
   });
   const candidates: ModelCandidate[] = [];
@@ -228,7 +236,12 @@ async function deepSeekModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.deepseek;
   if (!apiKey) return [];
   const Ctor = await loadOpenAICtor();
-  const list = await new Ctor({ apiKey, baseURL: "https://api.deepseek.com" }).models.list();
+  const list = await new Ctor({
+    apiKey,
+    baseURL: "https://api.deepseek.com",
+    timeout: config.retry.timeout_ms,
+    maxRetries: 0,
+  }).models.list();
   return list.data.map((model) => ({
     id: model.id,
     source: "api" as const,
@@ -241,7 +254,12 @@ async function grokModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.grok;
   if (!apiKey) return [];
   const Ctor = await loadOpenAICtor();
-  const list = await new Ctor({ apiKey, baseURL: "https://api.x.ai/v1" }).models.list();
+  const list = await new Ctor({
+    apiKey,
+    baseURL: "https://api.x.ai/v1",
+    timeout: config.retry.timeout_ms,
+    maxRetries: 0,
+  }).models.list();
   return list.data.map((model) => ({
     id: model.id,
     source: "api" as const,
@@ -249,20 +267,23 @@ async function grokModels(config: AppConfig): Promise<ModelCandidate[]> {
   }));
 }
 
-// v3.0.0 / v4.6.0: Perplexity model selection stays documentation-driven.
-// The Agent API publishes a models listing, but it is not exposed through
-// the OpenAI-SDK `models.list` path this resolver shares with the other
-// peers, so the resolver returns an empty live-candidate set and
-// `selectFromCandidates` keeps the documented PRIORITY pin with
-// confidence "inferred". Operators override via
-// CROSS_REVIEW_PERPLEXITY_MODEL using documented `provider/model` ids. The
-// runtime probe defaults to auth_only to avoid tokenized health checks;
-// operators can set CROSS_REVIEW_PERPLEXITY_PROBE_MODE=live when they
-// explicitly want a paid minimal round-trip without tools.
+// The Agent API documents GET /v1/models in the OpenAI List Models format.
+// This zero-token read validates the existing pin; an absent model or a
+// failed catalog read never selects a different family or fallback.
 async function perplexityModels(config: AppConfig): Promise<ModelCandidate[]> {
   const apiKey = config.api_keys.perplexity;
   if (!apiKey) return [];
-  return [];
+  const Ctor = await loadOpenAICtor();
+  const list = await new Ctor({
+    apiKey,
+    baseURL: "https://api.perplexity.ai/v1",
+    maxRetries: 0,
+  }).models.list({ timeout: config.retry.timeout_ms });
+  return list.data.map((model) => ({
+    id: model.id,
+    source: "api" as const,
+    metadata: { owned_by: model.owned_by, created: model.created },
+  }));
 }
 
 async function candidatesForPeer(config: AppConfig, peer: PeerId): Promise<ModelCandidate[]> {

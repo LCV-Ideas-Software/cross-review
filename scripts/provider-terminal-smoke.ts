@@ -4,13 +4,19 @@ import os from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/core/config.js";
 import { maxOutputTokensForPeer } from "../src/core/output-budget.js";
-import type { PeerCallContext, PeerFailure, RuntimeEvent } from "../src/core/types.js";
+import type { PeerCallContext, PeerFailure, PeerId, RuntimeEvent } from "../src/core/types.js";
 import { AnthropicAdapter } from "../src/peers/anthropic.js";
+import { STREAM_TEXT_MAX_BYTES } from "../src/peers/base.js";
 import { DeepSeekAdapter } from "../src/peers/deepseek.js";
 import { GeminiAdapter } from "../src/peers/gemini.js";
 import { GrokAdapter } from "../src/peers/grok.js";
+import { resolveBestModel } from "../src/peers/model-selection.js";
 import { OpenAIAdapter } from "../src/peers/openai.js";
-import { PerplexityAdapter } from "../src/peers/perplexity.js";
+import {
+  PerplexityAdapter,
+  stripPerplexityThinkingBlock,
+  stripPerplexityThinkingForTokenEvents,
+} from "../src/peers/perplexity.js";
 import { withRetry } from "../src/peers/retry.js";
 
 process.env.OPENAI_API_KEY = "fixture-openai-key";
@@ -209,113 +215,167 @@ async function assertBilledTerminalRejection(
   await assertTerminalRejection(() => adapter.call("fixture", context(true)));
 }
 
-// Chat Completions: truncated/filtered output and streams without an allowed
-// finish_reason cannot be promoted to a peer verdict or a relator artifact.
-{
-  const adapter = new DeepSeekAdapter(config);
-  setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () => ({
-          model: adapter.model,
-          choices: [{ finish_reason: "length", message: { content: READY } }],
-        }),
+// DeepSeek native Responses rejects missing/completed-with-refusal/incomplete
+// terminals. Neither a plausible provisional verdict nor reasoning is final text.
+function deepSeekResponse(
+  model: string,
+  text: string | null | undefined,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id: "deepseek-native-response-fixture",
+    status: "completed",
+    model,
+    output: [
+      {
+        type: "reasoning",
+        content: [{ type: "reasoning_text", text: "fixture-private-reasoning" }],
       },
-    },
-  });
-  await assertTerminalRejection(() => adapter.call("fixture", context()));
+      {
+        type: "message",
+        role: "assistant",
+        content: text === undefined ? [] : [{ type: "output_text", text }],
+      },
+    ],
+    ...overrides,
+  };
 }
 
-{
-  const adapter = new DeepSeekAdapter(config);
-  setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () =>
-          events([{ model: adapter.model, choices: [{ delta: { content: READY } }] }]),
-      },
-    },
-  });
-  await assertTerminalRejection(() => adapter.generate("fixture", context(true)));
-}
-
-// DeepSeek documents insufficient_system_resource as an interrupted inference,
-// not a completed answer. It is transient: discard partial output, preserve
-// billing, and use the configured bounded retry envelope.
-{
-  const adapter = new DeepSeekAdapter(billingConfig);
-  let calls = 0;
-  setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () => {
-          calls += 1;
-          return calls === 1
-            ? {
-                model: adapter.model,
-                choices: [
-                  {
-                    finish_reason: "insufficient_system_resource",
-                    message: { content: "partial" },
-                  },
-                ],
-                usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-              }
-            : {
-                model: adapter.model,
-                choices: [{ finish_reason: "stop", message: { content: READY } }],
-                usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
-              };
+for (const terminal of [undefined, "incomplete", "in_progress", "failed"] as const) {
+  for (const streamed of [false, true]) {
+    for (const phase of ["call", "generate"] as const) {
+      const adapter = new DeepSeekAdapter(config);
+      const response = deepSeekResponse(adapter.model, READY, {
+        status: terminal,
+        ...(terminal === "incomplete"
+          ? { incomplete_details: { reason: "max_output_tokens" } }
+          : {}),
+      });
+      setClient(adapter, {
+        responses: {
+          create: async () =>
+            streamed
+              ? events([
+                  { type: "response.output_text.delta", delta: READY },
+                  ...(terminal === undefined
+                    ? []
+                    : [
+                        {
+                          type: `response.${terminal}`,
+                          response,
+                        },
+                      ]),
+                ])
+              : response,
         },
+      });
+      await assertTerminalRejection(
+        () => adapter[phase]("fixture", context(streamed)),
+        /terminal|incomplete|failed/i,
+      );
+    }
+  }
+}
+
+// Native Responses preserves the existing UTF8 streaming resource bound,
+// even when the eventual completed message would have been small and healthy.
+for (const phase of ["call", "generate"] as const) {
+  const adapter = new DeepSeekAdapter(config);
+  let calls = 0;
+  const oversizedDelta = `${"é".repeat(STREAM_TEXT_MAX_BYTES / 2)}a`;
+  setClient(adapter, {
+    responses: {
+      create: async () => {
+        calls += 1;
+        return events([
+          { type: "response.output_text.delta", delta: oversizedDelta },
+          { type: "response.completed", response: deepSeekResponse(adapter.model, "healthy") },
+        ]);
       },
     },
   });
-  const result = await adapter.call("fixture", context());
-  assert.equal(calls, 2);
-  assert.equal(result.usage?.input_tokens, 17);
-  assert.equal(result.usage?.output_tokens, 8);
-  assert.equal(result.usage?.total_tokens, 25);
+  const ctx = context(true);
+  await assert.rejects(() => adapter[phase]("fixture", ctx), /streaming response exceeded.*bytes/);
+  assert.equal(calls, 1);
+  assert.equal(
+    ctx.events.some((event) => event.type === "peer.token.completed"),
+    false,
+  );
+  assert.ok(ctx.events.some((event) => event.type === "peer.token.discarded"));
 }
 
-{
+// Completed-only assistant text has the same cap, preserving its already
+// reported native billing even without provisional delta events.
+for (const phase of ["call", "generate"] as const) {
   const adapter = new DeepSeekAdapter(billingConfig);
-  let calls = 0;
-  const ctx = context(true);
+  const oversizedFinalText = `${"é".repeat(STREAM_TEXT_MAX_BYTES / 2)}a`;
   setClient(adapter, {
-    chat: {
-      completions: {
+    responses: {
+      create: async () =>
+        events([
+          {
+            type: "response.completed",
+            response: deepSeekResponse(adapter.model, oversizedFinalText, {
+              usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+            }),
+          },
+        ]),
+    },
+  });
+  const ctx = context(true);
+  await assertBilledTerminalRejection(() => adapter[phase]("fixture", ctx), {
+    input_tokens: 10,
+    output_tokens: 5,
+    total_tokens: 15,
+    total_cost: 0.00002,
+  });
+  assert.equal(
+    ctx.events.some((event) => event.type === "peer.token.completed"),
+    false,
+  );
+}
+
+// Native server_error remains inside the existing bounded retry envelope;
+// billing from the rejected attempt and its provisional token discard survive.
+for (const streamed of [false, true]) {
+  for (const phase of ["call", "generate"] as const) {
+    const adapter = new DeepSeekAdapter(billingConfig);
+    let calls = 0;
+    const ctx = context(streamed);
+    setClient(adapter, {
+      responses: {
         create: async () => {
           calls += 1;
-          return calls === 1
+          const response =
+            calls === 1
+              ? deepSeekResponse(adapter.model, "partial", {
+                  status: "failed",
+                  error: { code: "server_error", message: "synthetic native inference failure" },
+                  usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+                })
+              : deepSeekResponse(adapter.model, phase === "call" ? READY : "healthy", {
+                  usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+                });
+          return streamed
             ? events([
                 {
-                  model: adapter.model,
-                  choices: [
-                    {
-                      finish_reason: "insufficient_system_resource",
-                      delta: { content: "partial" },
-                    },
-                  ],
-                  usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+                  type: "response.output_text.delta",
+                  delta: calls === 1 ? "partial" : phase === "call" ? READY : "healthy",
                 },
+                { type: calls === 1 ? "response.failed" : "response.completed", response },
               ])
-            : events([
-                {
-                  model: adapter.model,
-                  choices: [{ finish_reason: "stop", delta: { content: "healthy" } }],
-                  usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
-                },
-              ]);
+            : response;
         },
       },
-    },
-  });
-  const result = await adapter.generate("fixture", ctx);
-  assert.equal(calls, 2);
-  assert.equal(result.text, "healthy");
-  assert.equal(result.usage?.input_tokens, 17);
-  assert.equal(result.usage?.output_tokens, 8);
-  assert.ok(ctx.events.some((event) => event.type === "peer.token.discarded"));
+    });
+    const result = await adapter[phase]("fixture", ctx);
+    assert.equal(calls, 2);
+    assert.equal(result.text, phase === "call" ? READY : "healthy");
+    assert.equal(result.usage?.input_tokens, 17);
+    assert.equal(result.usage?.output_tokens, 8);
+    assert.equal(result.usage?.total_tokens, 25);
+    if (streamed) assert.ok(ctx.events.some((event) => event.type === "peer.token.discarded"));
+  }
 }
 
 // v4.6.0: Perplexity speaks the Agent API (Responses protocol). A
@@ -810,6 +870,68 @@ for (const requestedEffort of ["low", "medium"] as const) {
   );
 }
 
+// The current native contract bills these three refusal categories before
+// output. Other/null categories are currently unbilled; this is not a promise
+// about future billing policy. Review/generation and both transports agree.
+for (const category of [
+  "bio",
+  "frontier_llm",
+  "reasoning_extraction",
+  "cyber",
+  "general_harms",
+  "unrecognized-fixture-category",
+  null,
+] as const) {
+  const billed =
+    category === "bio" || category === "frontier_llm" || category === "reasoning_extraction";
+  for (const streamed of [false, true]) {
+    for (const phase of ["review", "generation"] as const) {
+      const adapter = new AnthropicAdapter(billingConfig);
+      let calls = 0;
+      const message = {
+        content: [],
+        model: adapter.model,
+        stop_reason: "refusal",
+        stop_details: { type: "refusal", category },
+        usage: { input_tokens: 10, output_tokens: 0 },
+      };
+      setClient(adapter, {
+        messages: {
+          create: async () => {
+            calls += 1;
+            return message;
+          },
+          stream: () => {
+            calls += 1;
+            return {
+              controller: { abort: () => undefined },
+              on: () => undefined,
+              finalMessage: async () => message,
+            };
+          },
+        },
+      });
+      const ctx = context(streamed);
+      await assertBilledTerminalRejection(
+        () =>
+          phase === "review" ? adapter.call("fixture", ctx) : adapter.generate("fixture", ctx),
+        {
+          input_tokens: 10,
+          output_tokens: 0,
+          total_tokens: 10,
+          total_cost: billed ? 0.00001 : 0,
+          failure_class: "provider_refusal",
+        },
+      );
+      assert.equal(calls, 1, "a classifier refusal must not trigger retry or fallback");
+      const refusal = ctx.events.find((event) => event.type === "provider.refusal");
+      assert.equal(refusal?.data?.billed, billed);
+      assert.equal(refusal?.data?.category, category);
+      assert.equal(refusal?.data?.usable_output, false);
+    }
+  }
+}
+
 {
   const adapter = new AnthropicAdapter(config);
   setClient(adapter, {
@@ -832,59 +954,42 @@ for (const requestedEffort of ["low", "medium"] as const) {
 // accepted and processed the request. Every rejected terminal must therefore
 // retain the usage/cost ledger for that attempt instead of being mislabeled as
 // an unpriced local failure.
-{
-  const adapter = new DeepSeekAdapter(billingConfig);
-  let calls = 0;
-  setClient(adapter, {
-    chat: {
-      completions: {
+for (const streamed of [false, true]) {
+  for (const phase of ["call", "generate"] as const) {
+    const adapter = new DeepSeekAdapter(billingConfig);
+    let calls = 0;
+    const response = deepSeekResponse(adapter.model, READY, {
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      usage: {
+        input_tokens: 10,
+        output_tokens: 5,
+        total_tokens: 15,
+        output_tokens_details: { reasoning_tokens: 3 },
+      },
+    });
+    setClient(adapter, {
+      responses: {
         create: async () => {
           calls += 1;
-          return {
-            model: adapter.model,
-            choices: [{ finish_reason: "length", message: { content: READY } }],
-            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-          };
+          return streamed
+            ? events([
+                { type: "response.output_text.delta", delta: READY },
+                { type: "response.incomplete", response },
+              ])
+            : response;
         },
       },
-    },
-  });
-  await assertBilledTerminalRejection(() => adapter.call("fixture", context()), {
-    input_tokens: 10,
-    output_tokens: 5,
-    total_tokens: 15,
-    total_cost: 0.00002,
-  });
-  assert.equal(calls, 1);
-}
-
-{
-  const adapter = new DeepSeekAdapter(billingConfig);
-  setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () =>
-          events([
-            {
-              model: adapter.model,
-              choices: [{ finish_reason: "length", delta: { content: READY } }],
-              usage: null,
-            },
-            {
-              model: adapter.model,
-              choices: [],
-              usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-            },
-          ]),
-      },
-    },
-  });
-  await assertBilledTerminalRejection(() => adapter.generate("fixture", context(true)), {
-    input_tokens: 10,
-    output_tokens: 5,
-    total_tokens: 15,
-    total_cost: 0.00002,
-  });
+    });
+    await assertBilledTerminalRejection(() => adapter[phase]("fixture", context(streamed)), {
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 15,
+      reasoning_tokens: 3,
+      total_cost: 0.00002,
+    });
+    assert.equal(calls, 1);
+  }
 }
 
 {
@@ -1557,6 +1662,59 @@ for (const adapter of [
 }
 
 // Healthy terminal states remain accepted.
+// The completed native Responses metadata, final assistant text and cache /
+// reasoning usage survive both roles. Unknown native IDs stay unknown; no
+// Chat finish_reason or HTTP request_id is manufactured.
+for (const responseId of ["deepseek-native-response-fixture", undefined]) {
+  for (const phase of ["call", "generate"] as const) {
+    const adapter = new DeepSeekAdapter(config);
+    const usage = {
+      input_tokens: 100,
+      input_tokens_details: { cached_tokens: 40 },
+      output_tokens: 20,
+      output_tokens_details: { reasoning_tokens: 12 },
+      total_tokens: 120,
+    };
+    const response = deepSeekResponse(adapter.model, "healthy", { id: responseId, usage });
+    setClient(adapter, {
+      responses: {
+        create: async () =>
+          events([
+            { type: "response.created", response: { ...response, status: "in_progress" } },
+            { type: "response.reasoning_text.delta", delta: "fixture-private-reasoning" },
+            { type: "response.output_text.delta", delta: "healthy" },
+            { type: "response.completed", response },
+          ]),
+      },
+    });
+    const ctx = context(true);
+    const result = await adapter[phase]("fixture", ctx);
+    assert.equal(result.text, "healthy");
+    assert.deepEqual(result.raw, {
+      streamed: true,
+      provider: "deepseek",
+      chunks: 4,
+      model: adapter.model,
+      response_id: responseId ?? null,
+      status: "completed",
+      incomplete_details: null,
+      error: null,
+      output: response.output.filter((item) => item.type === "message"),
+      usage,
+    });
+    assert.equal(result.usage?.input_tokens, 60);
+    assert.equal(result.usage?.cache_read_tokens, 40);
+    assert.equal(result.usage?.cache_write_tokens, undefined);
+    assert.equal(result.usage?.output_tokens, 20);
+    assert.equal(result.usage?.reasoning_tokens, 12);
+    assert.equal(result.usage?.total_tokens, 120);
+    assert.equal(
+      ctx.events.some((event) => event.type === "provider.terminal_rejected"),
+      false,
+    );
+  }
+}
+
 {
   const adapter = new OpenAIAdapter(config);
   setClient(adapter, {
@@ -1569,17 +1727,11 @@ for (const adapter of [
 
 {
   const adapter = new DeepSeekAdapter(config);
-  setClient(adapter, {
-    chat: {
-      completions: {
-        create: async () => ({
-          model: adapter.model,
-          choices: [{ finish_reason: "stop", message: { content: "healthy" } }],
-        }),
-      },
-    },
-  });
-  assert.equal((await adapter.generate("fixture", context())).text, "healthy");
+  const response = deepSeekResponse(adapter.model, "healthy");
+  setClient(adapter, { responses: { create: async () => response } });
+  const result = await adapter.generate("fixture", context());
+  assert.equal(result.text, "healthy");
+  assert.equal(result.raw, response);
 }
 
 {
@@ -1611,6 +1763,478 @@ for (const adapter of [
     },
   });
   assert.equal((await adapter.generate("fixture", context())).text, "healthy");
+}
+
+// Literal reasoning tags in structured evidence belong to the final answer.
+// Suppress leading provider reasoning without changing quoted JSON strings,
+// including a tag that is only partially received in the streaming buffer.
+{
+  const literalReady = JSON.stringify({
+    status: "READY",
+    summary: "Preserve literal <think>marker</think> in evidence.",
+    confidence: "inferred",
+    evidence_sources: [],
+    caller_requests: [],
+    follow_ups: [],
+  });
+  for (const preamble of [
+    "",
+    "<think>fixture reasoning</think>",
+    "<think>one</think><think>two</think>",
+  ]) {
+    assert.equal(stripPerplexityThinkingBlock(preamble + literalReady), literalReady);
+    assert.equal(stripPerplexityThinkingForTokenEvents(preamble + literalReady), literalReady);
+  }
+  assert.equal(
+    stripPerplexityThinkingForTokenEvents('{"summary":"literal <thi'),
+    '{"summary":"literal <thi',
+  );
+  for (const streamed of [false, true]) {
+    const adapter = new PerplexityAdapter(config);
+    const terminal = {
+      status: "completed",
+      model: adapter.model,
+      output: [{ type: "message", content: [{ type: "output_text", text: literalReady }] }],
+    };
+    setClient(adapter, {
+      responses: {
+        create: async () =>
+          streamed
+            ? events([
+                { type: "response.output_text.delta", delta: literalReady },
+                { type: "response.completed", response: terminal },
+              ])
+            : terminal,
+      },
+    });
+    assert.equal((await adapter.call("fixture", context(streamed))).text, literalReady);
+    assert.equal((await adapter.generate("fixture", context(streamed))).text, literalReady);
+  }
+}
+
+// Completed reasoning-only, wrong-role or missing final text stays empty.
+// Even a provisional READY delta cannot replace the completed native output.
+for (const content of [null, "", "   ", undefined]) {
+  for (const streamed of [false, true]) {
+    const adapter = new DeepSeekAdapter(config);
+    const response = deepSeekResponse(adapter.model, content);
+    setClient(adapter, {
+      responses: {
+        create: async () =>
+          streamed
+            ? events([
+                { type: "response.output_text.delta", delta: READY },
+                { type: "response.completed", response },
+              ])
+            : response,
+      },
+    });
+    for (const phase of ["call", "generate"] as const) {
+      const result = await adapter[phase]("fixture", context(streamed));
+      assert.equal(result.text, "");
+      assert.ok(result.parser_warnings?.includes("deepseek_completed_without_assistant_text"));
+    }
+  }
+}
+for (const streamed of [false, true]) {
+  const adapter = new DeepSeekAdapter(config);
+  const response = deepSeekResponse(adapter.model, READY, {
+    output: [
+      { type: "message", role: "user", content: [{ type: "output_text", text: READY }] },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: READY }] },
+    ],
+  });
+  setClient(adapter, {
+    responses: {
+      create: async () =>
+        streamed ? events([{ type: "response.completed", response }]) : response,
+    },
+  });
+  assert.equal((await adapter.generate("fixture", context(streamed))).text, "");
+}
+
+// Native refusal is billed, never retried or silently salvaged into final text.
+for (const streamed of [false, true]) {
+  for (const phase of ["call", "generate"] as const) {
+    const adapter = new DeepSeekAdapter(billingConfig);
+    let calls = 0;
+    const response = deepSeekResponse(adapter.model, undefined, {
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "refusal", refusal: "synthetic native refusal" }],
+        },
+      ],
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    });
+    setClient(adapter, {
+      responses: {
+        create: async () => {
+          calls += 1;
+          return streamed
+            ? events([
+                { type: "response.refusal.delta", delta: "synthetic native refusal" },
+                { type: "response.completed", response },
+              ])
+            : response;
+        },
+      },
+    });
+    await assertBilledTerminalRejection(() => adapter[phase]("fixture", context(streamed)), {
+      input_tokens: 10,
+      output_tokens: 5,
+      total_tokens: 15,
+      total_cost: 0.00002,
+      failure_class: "provider_refusal",
+    });
+    assert.equal(calls, 1);
+  }
+}
+
+// Model-list authentication alone does not prove the configured model is
+// reachable. Check missing pins and explicit authorization failures without
+// making a tokenized request, then cover the successful pin.
+for (const Adapter of [DeepSeekAdapter, GrokAdapter, PerplexityAdapter]) {
+  for (const catalogCase of ["present", "absent", "unauthorized"] as const) {
+    const adapter = new Adapter(config);
+    let catalogCalls = 0;
+    let tokenizedCalls = 0;
+    setClient(adapter, {
+      models: {
+        list: async () => {
+          catalogCalls += 1;
+          if (catalogCase === "unauthorized") {
+            throw Object.assign(new Error("Fixture authentication failed"), { status: 401 });
+          }
+          return {
+            data: [{ id: catalogCase === "present" ? adapter.model : "fixture-other-model" }],
+          };
+        },
+      },
+      responses: {
+        create: async () => {
+          tokenizedCalls += 1;
+          throw new Error("The catalog probe must not generate tokens");
+        },
+      },
+    });
+    const probe = await adapter.probe();
+    assert.equal(probe.available, catalogCase === "present", `${adapter.id}: ${catalogCase}`);
+    assert.equal(catalogCalls, 1);
+    assert.equal(tokenizedCalls, 0);
+    assert.equal(probe.model, adapter.model, "an absent pin must never select a fallback");
+    if (catalogCase === "absent") assert.match(probe.message ?? "", /authenticated model catalog/);
+    if (catalogCase === "unauthorized") assert.match(probe.message ?? "", /authentication failed/);
+  }
+}
+
+// xAI's catalog publishes aliases alongside ids; a documented alias is
+// available when its target is returned even if it is not itself an id.
+{
+  const adapter = new GrokAdapter(config);
+  setClient(adapter, {
+    models: {
+      list: async () => ({ data: [{ id: "fixture-dated-model", aliases: [adapter.model] }] }),
+    },
+  });
+  assert.equal((await adapter.probe()).available, true);
+}
+
+// Native xAI cost ticks include all billable token dimensions. Preserve the
+// exact provider total alongside the existing configured-rate estimate.
+{
+  const adapter = new GrokAdapter(config);
+  setClient(adapter, {
+    responses: {
+      create: async () => ({
+        status: "completed",
+        model: adapter.model,
+        output: [
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: READY }] },
+        ],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 15,
+          total_tokens: 25,
+          output_tokens_details: { reasoning_tokens: 12 },
+          cost_in_usd_ticks: 37_756_000,
+        },
+      }),
+    },
+  });
+  for (const operation of ["call", "generate"] as const) {
+    const result = await adapter[operation]("fixture", context());
+    assert.equal(result.usage?.provider_reported_total_cost_usd, 0.0037756);
+    assert.equal(result.usage?.output_tokens, 15);
+    assert.equal(result.usage?.reasoning_tokens, 12);
+  }
+}
+
+// Current live Grok4.7 includes reasoning in output; older official examples
+// separate it. Total-minus-input normalizes either contract without adding
+// reasoning twice. Missing total never invents an additional billed bucket.
+for (const [nativeUsage, expectedOutput, expectedTotal] of [
+  [
+    {
+      input_tokens: 32,
+      output_tokens: 9,
+      total_tokens: 151,
+      output_tokens_details: { reasoning_tokens: 110 },
+      input_tokens_details: { cached_tokens: 8 },
+    },
+    119,
+    151,
+  ],
+  [
+    {
+      input_tokens: 32,
+      output_tokens: 119,
+      total_tokens: 151,
+      output_tokens_details: { reasoning_tokens: 110 },
+      input_tokens_details: { cached_tokens: 8 },
+    },
+    119,
+    151,
+  ],
+  [
+    { input_tokens: 32, output_tokens: 9, output_tokens_details: { reasoning_tokens: 110 } },
+    9,
+    undefined,
+  ],
+  [
+    {
+      input_tokens: 1249,
+      output_tokens: 31,
+      total_tokens: 1280,
+      output_tokens_details: { reasoning_tokens: 30 },
+      input_tokens_details: { cached_tokens: 1152 },
+    },
+    31,
+    1280,
+  ],
+] as const) {
+  const adapter = new GrokAdapter({
+    ...billingConfig,
+    retry: { ...billingConfig.retry, max_attempts: 1 },
+    cost_rates: {
+      ...billingConfig.cost_rates,
+      grok: { input_per_million: 1, output_per_million: 2, cache_read_per_million: 1 },
+    },
+  });
+  setClient(adapter, {
+    responses: {
+      create: async () => ({
+        status: "completed",
+        model: adapter.model,
+        output: [
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: READY }] },
+        ],
+        usage: { ...nativeUsage, cost_in_usd_ticks: 37_756_000 },
+      }),
+    },
+  });
+  for (const operation of ["call", "generate"] as const) {
+    const result = await adapter[operation]("Native billing fixture.", context());
+    assert.equal(result.usage?.output_tokens, expectedOutput);
+    assert.equal(
+      result.usage?.reasoning_tokens,
+      nativeUsage.output_tokens_details.reasoning_tokens,
+    );
+    if (expectedTotal !== undefined) assert.equal(result.usage?.total_tokens, expectedTotal);
+    const expectedCost = (nativeUsage.input_tokens + expectedOutput * 2) / 1_000_000;
+    assert.ok(Math.abs((result.cost?.total_cost ?? 0) - expectedCost) < 1e-12);
+    assert.equal(
+      result.usage?.provider_reported_total_cost_usd,
+      0.0037756,
+      "native charged total stays separate from configured-rate estimate",
+    );
+  }
+}
+
+// Native Responses reasoning uses the documented low/high/max scale.
+// Both roles preserve the same system instruction, configured output ceiling
+// and caller context, without unsupported OpenAI controls or Chat fallback.
+for (const [effort, expected] of [
+  ["none", "low"],
+  ["minimal", "low"],
+  ["low", "low"],
+  ["medium", "high"],
+  ["high", "high"],
+  ["xhigh", "high"],
+  ["max", "max"],
+  ["ultra", "max"],
+] as const) {
+  for (const streamed of [false, true]) {
+    const adapter = new DeepSeekAdapter(config);
+    let payload: Record<string, unknown> | undefined;
+    setClient(adapter, {
+      responses: {
+        create: async (body: Record<string, unknown>) => {
+          payload = body;
+          const response = deepSeekResponse(adapter.model, READY);
+          return streamed ? events([{ type: "response.completed", response }]) : response;
+        },
+      },
+    });
+    for (const operation of ["call", "generate"] as const) {
+      await adapter[operation]("fixture", {
+        ...context(streamed),
+        reasoning_effort_override: effort,
+        max_output_tokens_override: 8192,
+      });
+      assert.ok(payload, "the native Responses request must be captured");
+      assert.deepEqual(payload.reasoning, { effort: expected }, `${operation}: ${effort}`);
+      assert.equal(typeof payload?.instructions, "string");
+      assert.equal(payload?.model, adapter.model);
+      assert.equal(payload?.max_output_tokens, 8192);
+      assert.equal(payload?.stream, streamed ? true : undefined);
+      for (const key of [
+        "thinking",
+        "reasoning_effort",
+        "messages",
+        "response_format",
+        "store",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "prompt_cache_options",
+        "tools",
+        "stream_options",
+      ])
+        assert.equal(payload?.[key], undefined, key);
+      if (operation === "call") {
+        const format = (
+          payload.text as {
+            format: {
+              type: string;
+              schema: { additionalProperties: boolean; required: readonly string[] };
+            };
+          }
+        ).format;
+        assert.equal(format.type, "json_schema");
+        assert.equal(format.schema.additionalProperties, false);
+        assert.deepEqual(format.schema.required, [
+          "status",
+          "summary",
+          "confidence",
+          "evidence_sources",
+          "caller_requests",
+          "follow_ups",
+        ]);
+      } else {
+        assert.equal(payload?.text, undefined);
+        assert.equal(payload?.input, "fixture");
+      }
+    }
+  }
+}
+
+// Grok's documented best-effort cache-miss control is omission of the
+// sticky routing key. Honor global and per-peer disable in both roles,
+// preserving ordinary automatic caching behavior and literal input.
+for (const [enabled, disabled, expectKey] of [
+  [true, false, true],
+  [true, true, false],
+  [false, false, false],
+] as const) {
+  const adapter = new GrokAdapter({
+    ...config,
+    cache: {
+      ...config.cache,
+      enabled,
+      disable_per_peer: { ...config.cache.disable_per_peer, grok: disabled },
+    },
+  });
+  let payload: Record<string, unknown> | undefined;
+  setClient(adapter, {
+    responses: {
+      create: async (body: Record<string, unknown>) => {
+        payload = body;
+        return {
+          status: "completed",
+          model: adapter.model,
+          output: [
+            { type: "message", role: "assistant", content: [{ type: "output_text", text: READY }] },
+          ],
+        };
+      },
+    },
+  });
+  for (const operation of ["call", "generate"] as const) {
+    await adapter[operation]("Literal cache fixture.", { ...context(), caller: "codex" });
+    assert.equal(
+      typeof payload?.prompt_cache_key === "string",
+      expectKey,
+      `${operation}: native cache routing key`,
+    );
+    assert.ok(
+      JSON.stringify(payload?.input).includes("Literal cache fixture."),
+      "cache controls do not rewrite evidence",
+    );
+  }
+}
+
+// Catalog discovery precedes adapter probes. Its actual official SDK
+// transport must obey the configured timeout and make only one HTTP
+// attempt, preserving the pin when the read fails.
+{
+  const originalFetch = globalThis.fetch;
+  // SDK timeout timers are unref'ed; this fixture supplies the transport
+  // handle that a real in-flight HTTP request would keep alive.
+  const keepAlive = setInterval(() => {}, 1000);
+  const modelOverrideNames: Record<PeerId, string> = {
+    codex: "CROSS_REVIEW_OPENAI_MODEL",
+    claude: "CROSS_REVIEW_ANTHROPIC_MODEL",
+    gemini: "CROSS_REVIEW_GEMINI_MODEL",
+    deepseek: "CROSS_REVIEW_DEEPSEEK_MODEL",
+    grok: "CROSS_REVIEW_GROK_MODEL",
+    perplexity: "CROSS_REVIEW_PERPLEXITY_MODEL",
+  };
+  const savedOverrides = Object.fromEntries(
+    Object.values(modelOverrideNames).map((name) => [name, process.env[name]]),
+  );
+  try {
+    for (const name of Object.values(modelOverrideNames)) delete process.env[name];
+    for (const peer of Object.keys(modelOverrideNames) as PeerId[]) {
+      let calls = 0;
+      globalThis.fetch = async () => {
+        calls++;
+        return new Response(
+          JSON.stringify({ error: { type: "overloaded_error", message: "fixture overload" } }),
+          { status: 503, headers: { "content-type": "application/json", "retry-after-ms": "1" } },
+        );
+      };
+      const selection = await resolveBestModel(config, peer);
+      assert.equal(calls, 1, `${peer}: catalog SDK must not retry invisibly`);
+      assert.equal(selection.selected, config.models[peer]);
+      assert.equal(selection.confidence, "unknown");
+      let aborted = false;
+      globalThis.fetch = async (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          const rejectAbort = () => {
+            aborted = true;
+            reject(new DOMException("fixture aborted", "AbortError"));
+          };
+          if (signal?.aborted) rejectAbort();
+          else signal?.addEventListener("abort", rejectAbort, { once: true });
+        });
+      const timed = await resolveBestModel(
+        { ...config, retry: { ...config.retry, timeout_ms: 30 } },
+        peer,
+      );
+      assert.equal(aborted, true, `${peer}: native catalog timeout aborts the HTTP request`);
+      assert.equal(timed.selected, config.models[peer]);
+      assert.equal(timed.confidence, "unknown");
+    }
+  } finally {
+    clearInterval(keepAlive);
+    globalThis.fetch = originalFetch;
+    for (const [name, value] of Object.entries(savedOverrides)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 }
 
 console.log("[provider-terminal-smoke] PASS");

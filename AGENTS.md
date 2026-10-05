@@ -14,7 +14,8 @@ Pointer for AI agents working in this repository.
 
 This repository is the source of the cross-review MCP server: API-first
 multi-model cross-review with unanimous convergence gates. Binaries published
-by the package: `cross-review` and `cross-review-dashboard`.
+by the package: `cross-review`. The protocol and its tools serve agents only;
+human-facing tools, dashboards and operator identities are not part of the product.
 
 ## Mandatory Gates
 

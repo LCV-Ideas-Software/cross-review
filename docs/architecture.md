@@ -17,7 +17,6 @@ This API-only `cross-review` implementation is intentionally independent from th
    streaming is enabled.
 8. Reports: writes `session-report.md` with convergence, failures, decision quality, peer-vs-generation cost split, evidence checklist status and recent events.
 9. Observability: writes one NDJSON log per process under `<data_dir>/logs`.
-10. Dashboard: local read-only HTTP UI for sessions, events, reports, probes and metrics.
 
 ## Real Execution Rule
 
@@ -88,7 +87,7 @@ When token streaming is active, adapters use provider-native streaming APIs:
 - OpenAI: Responses API streaming events, including `response.output_text.delta`.
 - Anthropic: Messages stream helper with text deltas and `finalMessage()`.
 - Gemini: `models.generateContentStream`.
-- DeepSeek: OpenAI-compatible chat completions with `stream: true`.
+- DeepSeek: native Responses API streaming events and terminal response status.
 
 The streaming path is not a separate fake progress channel. The same streamed
 text is accumulated and then parsed into the existing review or generation
@@ -250,7 +249,7 @@ Decision quality is tracked per peer:
 - `clean`: parsed status without warnings.
 - `format_warning`: parsed with non-blocking parser warnings.
 - `recovered`: recovered through format repair, moderation-safe retry or bounded sanitization.
-- `needs_operator_review`: no parseable status remains after recovery.
+- `needs_agent_review`: no parseable status remains after recovery.
 - `failed`: provider or model-selection failure blocked the peer.
 
 `unparseable_after_recovery`, `prompt_flagged_by_moderation`,
@@ -306,11 +305,11 @@ provider exposes a model-list surface:
 - Gemini: `models.list`.
 - DeepSeek: OpenAI-compatible `/models`.
 - xAI: OpenAI-compatible `/models`.
-- Perplexity: the Agent API catalog is not exposed through the shared
-  OpenAI-SDK `models.list` path; the runtime keeps the officially documented
-  pin with inferred confidence. Its default `auth_only` probe checks key
-  presence without buying a completion, while `live` deliberately performs a
-  minimal paid request without tools.
+- Perplexity: native `GET /v1/models` through the official OpenAI-compatible
+  SDK. Its default `auth_only` probe authenticates and checks the configured
+  pin without buying a completion, while `live` deliberately performs a
+  minimal paid request without tools. A failed catalog request preserves the
+  configured pin with unknown confidence.
 
 The selected model and selection evidence are persisted in the session capability snapshot.
 
@@ -318,9 +317,10 @@ The selected model and selection evidence are persisted in the session capabilit
 
 Central `config.json`, process environment and Windows user environment are
 read once during MCP process startup. `server_info.config_load` exposes the
-load result, path, parse error, applied/overridden field counts, the ignored
-loaded and current
-mtime/SHA-256, `live_reload_supported=false`, and `reload_required`.
+load result, path, parse error, applied/overridden field counts, loaded and
+current mtime/SHA-256, `live_reload_supported=false`, and `reload_required`.
+The strict `FileConfigSchema` rejects unknown keys; remove the retired
+`dashboard_port` field from an older configuration before loading v10.
 Paid calls fail closed when the file was invalid at load or its current hash no
 longer matches the loaded snapshot. Editing the file therefore requires an MCP
 host/window restart or reload; opening a new tool call is not a live reload.
@@ -432,9 +432,9 @@ The peer adapters use the strongest official reasoning controls available for ea
   whole admissible set. Fable has 30-day/no-ZDR retention semantics.
 - Gemini maps the shared configured effort to the pinned Gemini 3.x model's
   native `LOW`, `MEDIUM`, or `HIGH` thinking level.
-- DeepSeek enables Thinking Mode with top-level `reasoning_effort` and follows
-  the official multi-round guidance by resending summarized context in each
-  stateless request.
+- DeepSeek uses the native Responses API with `reasoning.effort`, system
+  `instructions` and the complete current request context on each stateless call.
+  It sends no unsupported stored-history, truncation or cache-control fields.
 - Grok runs pinned `grok-4.7` with explicit `reasoning.effort` at `low`,
   `medium`, `high`, or `xhigh` (`max`/`ultra` become `xhigh`).
 - Perplexity runs the pinned `perplexity/kimi-k3` model on the Agent API with
@@ -451,10 +451,15 @@ The peer adapters use the strongest official reasoning controls available for ea
 
 The internal `ReasoningEffort` scale therefore includes the compatibility
 alias `ultra`, but adapters own the provider-specific normalization boundary:
-OpenAI GPT-5.6, Anthropic and DeepSeek use `max`; Grok 4.6 uses `xhigh`;
+OpenAI GPT-6 Astra, Anthropic and DeepSeek use `max`; Grok 4.7 uses `xhigh`;
 Perplexity (`perplexity/kimi-k3`) uses `high`; Gemini maps the shared setting to its native `ThinkingLevel` enum and
 receives no shared effort string. Older explicit OpenAI model overrides use their own
-family-specific effort enum instead of the GPT-5.6 enum.
+family-specific effort enum instead of the GPT-6 Astra enum.
+
+Caller-scoped OpenAI review and generation requests use native implicit caching
+when configured caching is enabled. For GPT-6 Astra, callerless requests have
+no caller-derived `cacheKey` and send `prompt_cache_options` with
+`mode: "explicit"` and no breakpoints, disabling implicit caching.
 
 ## Provider Structured-Output Boundaries
 
@@ -468,8 +473,8 @@ the JSON Schema subset documented by each provider:
   variation is canonicalized only when it is an exact case-insensitive match.
 - Gemini retains documented `maxItems` constraints but omits undocumented
   `maxLength` keywords.
-- DeepSeek uses documented JSON Object mode plus local validation; it does not
-  receive a JSON Schema wrapper.
+- DeepSeek receives a portable schema through native Responses
+  `text.format.type=json_schema`; the complete constraints remain local.
 - xAI retains documented limits, with evidence-item `maxLength` constrained to
   the guaranteed 2,048-character range, and omits undocumented
   `text.verbosity`.
@@ -486,12 +491,12 @@ contract.
 Terminal output remains fail-closed. The runtime performs exactly one
 controlled same-model recovery for OpenAI `response.incomplete` with
 `incomplete_details.reason=max_output_tokens` and Gemini `MAX_TOKENS` when the
-original effort can be reduced. Claude Fable 5 `max_tokens` receives the same
+original effort can be reduced. Claude Fable 5.1 `max_tokens` receives the same
 single recovery only from `high`/`xhigh`/`max`; `low` and `medium` do not retry,
 because medium would increase or repeat effort. The second request keeps the
 same prompt and output ceiling, records discarded partial streaming output,
 and preserves per-attempt usage and cost. A second truncation ends the call.
-DeepSeek `length` and generic xAI and Perplexity Agent API incomplete responses
+DeepSeek and generic xAI and Perplexity Agent API incomplete responses
 remain non-retryable because their public contracts do not distinguish every
 cause safely.
 
@@ -504,8 +509,9 @@ recovery path, and its extra call remains subject to budget preflight.
 Rejected terminals are still billable evidence. Adapters attach any
 provider-reported usage and effective-model cost before throwing; the retry
 layer merges billed failed attempts into a later success or final failure.
-DeepSeek streaming defers rejection until it has drained the documented final
-`choices: []` usage chunk. Responses API `status=failed` keeps
+DeepSeek retains native terminal status and usage and extracts only final
+assistant `output_text`; reasoning items and empty response envelopes never
+become drafts or verdicts. Responses API `status=failed` keeps
 `response.error`; SSE `type=error` reads official top-level fields; and output
 refusals (`output[].content[].type=refusal` or
 `response.refusal.delta/done`) terminate without format recovery.
