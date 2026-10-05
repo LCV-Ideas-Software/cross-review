@@ -804,9 +804,12 @@ export class PerplexityAdapter extends BasePeerAdapter implements PeerAdapter {
               ? lastRetrieveError.message
               : String(lastRetrieveError)
           }`;
-    return new Error(
-      `perplexity_background_poll_timeout: background response ${backgroundId} was still queued or in_progress ` +
-        `after ${polls} retrievals and ${this.config.retry.timeout_ms} ms (CROSS_REVIEW_TIMEOUT_MS).${retrieveDetail}`,
+    return Object.assign(
+      new Error(
+        `perplexity_background_poll_timeout: background response ${backgroundId} was still queued or in_progress ` +
+          `after ${polls} retrievals and ${this.config.retry.timeout_ms} ms (CROSS_REVIEW_TIMEOUT_MS).${retrieveDetail}`,
+      ),
+      { code: "perplexity_background_poll_timeout" },
     );
   }
 

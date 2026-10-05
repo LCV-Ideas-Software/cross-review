@@ -7,6 +7,13 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+## [v10.00.01] — 05/10/2026
+
+### Fixed
+
+- Preserve unresolved background-request billing through financial admission,
+  including transient retrieval failures and configured fallback handling.
+
 ## [v10.00.00] — 05/10/2026
 
 ### Removed

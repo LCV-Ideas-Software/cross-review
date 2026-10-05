@@ -316,12 +316,20 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.match(error.message, /perplexity_background_poll_timeout/);
+      const failure = (error as { peerFailure?: PeerFailure }).peerFailure;
+      assert.ok(failure);
+      assert.equal(failure.failure_class, "timeout");
+      assert.equal(failure.billing_status, "unknown");
+      assert.equal(failure.unpriced_attempts, 1);
+      assert.equal(failure.indeterminate_spend_attempts, 1);
+      assert.equal(failure.safe_to_repeat, false);
       return true;
     },
   );
   const elapsed = Date.now() - started;
   assert.ok(elapsed >= 250, `the deadline must not fire early (elapsed ${elapsed} ms)`);
   assert.ok(elapsed < 1500, `the deadline must bound the poll loop (elapsed ${elapsed} ms)`);
+  assert.equal(calls.createOptions.length, 1, "an abandoned run must not be recreated");
   assert.deepEqual(
     calls.postPaths,
     ["/agent/resp_bg_deadline/cancel"],
@@ -594,6 +602,13 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.match(error.message, /perplexity_background_poll_timeout/);
+      const failure = (error as { peerFailure?: PeerFailure }).peerFailure;
+      assert.ok(failure);
+      assert.equal(failure.failure_class, "timeout");
+      assert.equal(failure.billing_status, "unknown");
+      assert.equal(failure.unpriced_attempts, 1);
+      assert.equal(failure.indeterminate_spend_attempts, 1);
+      assert.equal(failure.safe_to_repeat, false);
       return true;
     },
   );
@@ -608,6 +623,7 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     1,
     `one retrieval must cost one HTTP attempt (issued ${httpAttempts})`,
   );
+  assert.equal(calls.createOptions.length, 1, "a hung retrieval must not recreate its run");
   assert.ok(elapsed >= budgetMs * 0.8, `the deadline must not fire early (elapsed ${elapsed} ms)`);
   assert.ok(
     elapsed < budgetMs * 1.5,
@@ -757,8 +773,8 @@ function completedResponse(model: string, text: string): Record<string, unknown>
 // `isSkippableFailure` uses it to leave a provider error `skipped` rather than
 // `rejected` — flipping it would silently BLOCK convergence — and the
 // orchestrator reads the same field for fallback eligibility. So the
-// classification is asserted unchanged here, and only the retry loop is
-// stopped, through `safe_to_repeat`.
+// recovery classification is asserted unchanged here, and unsafe retry or
+// fallback dispatch is stopped through `safe_to_repeat`.
 {
   const retrying: AppConfig = {
     ...config,
@@ -962,7 +978,8 @@ function completedResponse(model: string, text: string): Record<string, unknown>
 // retrieval error's text, so `GATEWAY_5XX_RE` matches and the whole closure is
 // classified retryable. Confirmed by a peer panel against the pre-fix tree; the
 // session identifier stays out of the repository by policy.
-{
+for (const retrievalStatus of [503, 429] as const) {
+  const responseId = retrievalStatus === 503 ? "resp_bg_poll5xx" : "resp_bg_poll429";
   const retrying: AppConfig = {
     ...withTimeout(1_500),
     retry: {
@@ -979,11 +996,14 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     adapter,
     recordingClient(
       calls,
-      async () => ({ id: "resp_bg_poll5xx", status: "queued" }),
+      async () => ({ id: responseId, status: "queued" }),
       async () => {
-        // Transient by `isPerplexityRetrievalTransient` (>= 500), so the loop
-        // keeps polling and records this as the last retrieval error.
-        throw httpError(503, "Service Unavailable");
+        // Transient retrieval failures keep polling; their diagnostics must
+        // not replace the classification of the exhausted overall deadline.
+        throw httpError(
+          retrievalStatus,
+          retrievalStatus === 429 ? "429 Too Many Requests" : "503 Service Unavailable",
+        );
       },
     ),
   );
@@ -997,10 +1017,14 @@ function completedResponse(model: string, text: string): Record<string, unknown>
         /perplexity_background_poll_timeout/,
         "the failure must be the poll timeout, not the retrieval error itself",
       );
+      assert.equal(failure.failure_class, "timeout");
+      assert.equal(failure.billing_status, "unknown");
+      assert.equal(failure.unpriced_attempts, 1);
+      assert.equal(failure.indeterminate_spend_attempts, 1);
       assert.equal(
         failure.retryable,
         true,
-        "the embedded 5xx still classifies retryable — the classification is untouched",
+        "an exhausted poll deadline remains retryable without repeating its stored run",
       );
       assert.equal(isSkippableFailure(failure), true, "convergence must still be reachable");
       assert.equal(
@@ -1017,10 +1041,12 @@ function completedResponse(model: string, text: string): Record<string, unknown>
     "the closure must not be re-entered: a second create would run alongside a run that is at best cancelling",
   );
   assert.ok(
-    calls.postPaths.includes("/agent/resp_bg_poll5xx/cancel"),
+    calls.postPaths.includes(`/agent/${responseId}/cancel`),
     "the abandoned run must still be asked to stop",
   );
-  console.log("[v6.0.0-perplexity-background] poll_failure_is_unrepeatable: PASS");
+  console.log(
+    `[v6.0.0-perplexity-background] poll_${retrievalStatus}_failure_is_unrepeatable: PASS`,
+  );
 }
 
 console.log("[v6.0.0-perplexity-background] ALL CASES PASS");

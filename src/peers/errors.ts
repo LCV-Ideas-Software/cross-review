@@ -361,6 +361,11 @@ export function classifyProviderError(
     );
   const errorRecord =
     error && typeof error === "object" ? (error as Record<string, unknown>) : undefined;
+  // This adapter-owned deadline remains indeterminate even when the last
+  // tolerated retrieval failed with a different provider error category.
+  const perplexityBackgroundPollTimedOut =
+    provider.toLowerCase() === "perplexity" &&
+    errorRecord?.code === "perplexity_background_poll_timeout";
   const providerRefusal =
     errorRecord?.code === "provider_output_refusal" ||
     (provider.toLowerCase() === "anthropic" &&
@@ -381,6 +386,7 @@ export function classifyProviderError(
           message,
         )));
   const timeout =
+    perplexityBackgroundPollTimedOut ||
     /\b(?:timeout|vector_store_timeout)\b/i.test(providerSignals) ||
     /\b(?:timeout|aborted|aborterror)\b/i.test(message);
   const network = /\b(?:econnreset|enotfound|etimedout|network|fetch failed)\b/i.test(message);
@@ -420,21 +426,23 @@ export function classifyProviderError(
         : 0;
   const unpricedAttempts = Math.max(0, attempts - accountedAttempts);
 
-  const failureClass = auth
-    ? "auth"
-    : cancelled
-      ? "cancelled"
-      : providerRefusal
-        ? "provider_refusal"
-        : moderation
-          ? "prompt_flagged_by_moderation"
-          : rateLimited
-            ? "rate_limit"
-            : timeout
-              ? "timeout"
-              : network
-                ? "network"
-                : "provider_error";
+  const failureClass = perplexityBackgroundPollTimedOut
+    ? "timeout"
+    : auth
+      ? "auth"
+      : cancelled
+        ? "cancelled"
+        : providerRefusal
+          ? "provider_refusal"
+          : moderation
+            ? "prompt_flagged_by_moderation"
+            : rateLimited
+              ? "rate_limit"
+              : timeout
+                ? "timeout"
+                : network
+                  ? "network"
+                  : "provider_error";
 
   // v2.15.0 (item 5): docs hint for 4xx parameter rejections. Only
   // applies when the failure class is `provider_error` (avoid stomping

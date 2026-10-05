@@ -4397,11 +4397,15 @@ interface ProviderSpendEvidence {
   billing_status?: "reported" | "unknown" | undefined;
   unpriced_attempts?: number | undefined;
   indeterminate_spend_attempts?: number | undefined;
+  safe_to_repeat?: boolean | undefined;
   failure_class?: PeerFailure["failure_class"] | undefined;
   message?: string | undefined;
 }
 
 function providerSpendEvidenceIsIndeterminate(evidence: ProviderSpendEvidence): boolean {
+  // An abandoned billable run remains unsettled, including older records
+  // whose final provider-error class stamped a zero indeterminate marker.
+  if (evidence.safe_to_repeat === false) return true;
   // Merged chains keep only the last failure's class; this marker preserves
   // indeterminate attempts from earlier links (e.g. [timeout, provider_error]).
   if ((evidence.indeterminate_spend_attempts ?? 0) > 0) return true;
@@ -6538,7 +6542,9 @@ export class CrossReviewOrchestrator {
         started,
       );
       if (failure.failure_class !== "prompt_flagged_by_moderation") {
-        const fallbackEligible = failure.retryable || failure.failure_class === "provider_refusal";
+        const fallbackEligible =
+          failure.safe_to_repeat !== false &&
+          (failure.retryable || failure.failure_class === "provider_refusal");
         if (fallbackEligible) {
           let fallbackWasTried = false;
           let lastFallbackFailure: PeerFailure | undefined;
@@ -6688,11 +6694,11 @@ export class CrossReviewOrchestrator {
               );
               lastFallbackFailure = fallbackFailure;
               fallbackFailures.push(fallbackFailure);
-              if (!fallbackFailure.retryable) {
+              if (!fallbackFailure.retryable || fallbackFailure.safe_to_repeat === false) {
                 return {
                   adapter: fallback,
                   failure: mergeFailureChain(fallbackFailures, {
-                    message: `Primary model failed with ${failure.failure_class}; fallback ${fallback.model} failed terminally: ${fallbackFailure.message}`,
+                    message: `Primary model failed with ${failure.failure_class}; fallback ${fallback.model} failed: ${fallbackFailure.message}`,
                     retryable: false,
                   }),
                 };

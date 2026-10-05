@@ -2,7 +2,7 @@
 
 ## Supported status
 
-Current supported source/release target: v10.00.00 for package 10.0.0. This
+Current supported source/release target: v10.00.01 for package 10.0.1. This
 statement identifies supported source metadata; registry publication is
 verified independently through npm. The current `main` branch remains supported
 for security fixes after publication.
