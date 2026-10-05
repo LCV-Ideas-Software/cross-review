@@ -718,10 +718,11 @@ try {
       assert.ok(parent);
       assert.equal(parent.parent_pid, process.pid, "the native audit must identify this host");
       if (parent.parent_exe_basename !== null) {
-        assert.equal(
-          parent.parent_exe_basename.toLowerCase(),
-          path.basename(process.execPath).toLowerCase(),
-        );
+        const nativeParentName =
+          process.platform === "linux"
+            ? fs.readFileSync(`/proc/${process.pid}/comm`, "utf8").trim()
+            : path.basename(process.execPath);
+        assert.equal(parent.parent_exe_basename.toLowerCase(), nativeParentName.toLowerCase());
       }
       assert.deepEqual(audit.data, {
         site: "session_attach_evidence",

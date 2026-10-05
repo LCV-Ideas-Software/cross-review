@@ -162,7 +162,6 @@ instead of degrading quality without warning.
 | Model selection | Validates and records the canonical model or explicit override used by each peer.      |
 | Session store   | Persists `meta.json`, events, attachments, reports and session artifacts.              |
 | Observability   | Produces per-process NDJSON logs, metrics and session reports.                         |
-| Dashboard       | Offers a local read-only HTTP UI for sessions, events, probes, reports and metrics.    |
 | Cost layer      | Estimates cost and blocks paid calls without an explicit budget and rate cards.        |
 | Prompt cache    | Uses provider prompt caching where supported and records uniform telemetry.            |
 

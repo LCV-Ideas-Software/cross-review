@@ -619,12 +619,106 @@ for (const [key, value] of [
   );
   assert.equal(JSON.parse(encodedRedacted).message, expected);
 }
-for (const prose of [
-  'request used "API_KEY=["SYNTHETIC-prefixless-secret"]"',
-  'request used: "API_KEY={"nested":["SYNTHETIC-prefixless-secret"]}"',
-]) {
+for (const [prose, expected] of [
+  ['request used "API_KEY=["SYNTHETIC-prefixless-secret"]"', 'request used "API_KEY=[REDACTED]"'],
+  [
+    'request used: "API_KEY={"nested":["SYNTHETIC-prefixless-secret"]}"',
+    'request used: "API_KEY=[REDACTED]"',
+  ],
+] as const) {
+  assert.equal(redact(prose), expected);
   assert.doesNotMatch(redact(prose), /SYNTHETIC-/);
   assert.match(redact(prose), /\[REDACTED\]/);
+}
+const prefixedPayload = "Error: " + JSON.stringify('{"api_key":[1,2]}');
+assert.equal(redact(prefixedPayload), "Error: " + JSON.stringify('{"api_key":"[REDACTED]"}'));
+for (const prefix of ["Error: ", "warning: payload=", "request rejected -> "]) {
+  for (const layers of [1, 2]) {
+    const encode = (text: string): string =>
+      layers === 1 ? JSON.stringify(text) : JSON.stringify(JSON.stringify(text));
+    for (const value of [
+      [1, 2],
+      { nested: [textContainerSecret, { value: textContainerSecret }] },
+      textContainerSecret,
+      "short",
+      "",
+    ]) {
+      const encodedValue = JSON.stringify(value);
+      const inner =
+        `{ "status":"NOT_READY", "api_key": ${encodedValue}, "status":"READY", ` +
+        '"input_tokens":7, "benign":["read"] }';
+      const expectedInner = inner.replace(encodedValue, '"[REDACTED]"');
+      const suffix = " unrelated suffix";
+      const output = redact(prefix + encode(inner) + suffix);
+      assert.equal(output, prefix + encode(expectedInner) + suffix);
+      let decodedInner = JSON.parse(output.slice(prefix.length, -suffix.length)) as string;
+      if (layers === 2) decodedInner = JSON.parse(decodedInner) as string;
+      assert.equal(decodedInner, expectedInner);
+      assert.equal(JSON.parse(decodedInner).api_key, "[REDACTED]");
+      assert.equal(parsePeerStatus(decodedInner).status, null);
+    }
+  }
+}
+for (const layers of [1, 2]) {
+  const encode = (text: string): string =>
+    layers === 1 ? JSON.stringify(text) : JSON.stringify(JSON.stringify(text));
+  for (const malformedInner of [
+    '{"api_key":["SYNTHETIC-unclosed',
+    '{"api_key":{"nested":["SYNTHETIC-mismatched"]]',
+    '{"api_key":"SYNTHETIC-unclosed',
+  ]) {
+    assert.equal(
+      redact("Error: " + encode(malformedInner) + " preserved suffix"),
+      "Error: " + encode('{"api_key":"[REDACTED]"') + " preserved suffix",
+    );
+  }
+  const benignPrefixed = "Error: " + encode('{"input_tokens":[1,2],"token_count":7}') + " suffix";
+  assert.equal(redact(benignPrefixed), benignPrefixed);
+}
+assert.equal(
+  redact('{"id-token":"write","token":"write"}'),
+  '{"id-token":"write","token":"write"}',
+);
+for (const permission of ["write", "none"]) {
+  const nativePermission = { permissions: { "id-token": permission }, input_tokens: 7 };
+  assert.deepEqual(redactJsonValue(nativePermission), nativePermission);
+  const rawPermission =
+    `{ "status":"NOT_READY", "id-token":"${permission}", "status":"READY", ` + '"input_tokens":7 }';
+  for (const layers of [0, 1, 2]) {
+    const encoded =
+      layers === 0
+        ? rawPermission
+        : layers === 1
+          ? JSON.stringify(rawPermission)
+          : JSON.stringify(JSON.stringify(rawPermission));
+    const diagnostic = `Error: ${encoded} preserved suffix`;
+    assert.equal(redact(diagnostic), diagnostic);
+    assert.equal(parsePeerStatus(rawPermission).status, null);
+  }
+}
+const workflowJwtFixture = `${"A".repeat(36)}.${"B".repeat(24)}.${"C".repeat(24)}`;
+for (const [key, value] of [
+  ["id-token", workflowJwtFixture],
+  ["id-token", "short"],
+  ["id-token", ["write"]],
+  ["id-token", { value: "none" }],
+  ["api_key", "short"],
+  ["token", "write"],
+  ["id_token", "write"],
+  ["ID-TOKEN", "write"],
+  ["prefix_id-token", "none"],
+] as const) {
+  const credential = { [key]: value, input_tokens: 7 };
+  const maskedCredential = { [key]: "[REDACTED]", input_tokens: 7 };
+  assert.deepEqual(redactJsonValue(credential), maskedCredential);
+  for (const layers of [1, 2]) {
+    const encode = (text: string): string =>
+      layers === 1 ? JSON.stringify(text) : JSON.stringify(JSON.stringify(text));
+    assert.equal(
+      redact(`Error: ${encode(JSON.stringify(credential))} preserved suffix`),
+      `Error: ${encode(JSON.stringify(maskedCredential))} preserved suffix`,
+    );
+  }
 }
 const duplicateStatusWithCredential =
   '{ "status":"NOT_READY", "api_key":["SYNTHETIC-prefixless"], "status":"READY", ' +
@@ -669,6 +763,28 @@ assert.ok(
   "many complete credential containers in one enclosing string must avoid rescanning its tail",
 );
 console.log("[smoke] textual_credential_container_redaction_test: PASS");
+
+const assignmentWhitespaceStarted = Date.now();
+for (const length of [50_000, 100_000, 200_000]) {
+  const whitespace = " ".repeat(length);
+  const missingDelimiter = `API_KEY${whitespace}!`;
+  assert.equal(redact(missingDelimiter), missingDelimiter);
+  assert.equal(
+    redact(`API_KEY${whitespace}=SYNTHETIC-prefixless-secret`),
+    `API_KEY${whitespace}=[REDACTED]`,
+  );
+  assert.equal(
+    redact(`API_KEY${whitespace}=["SYNTHETIC-prefixless-secret"]`),
+    `API_KEY${whitespace}="[REDACTED]"`,
+  );
+  const metric = `input_tokens${whitespace}=123`;
+  assert.equal(redact(metric), metric);
+}
+assert.ok(
+  Date.now() - assignmentWhitespaceStarted < 1_000,
+  "optional closing quotes must not create overlapping whitespace repetitions",
+);
+console.log("[smoke] credential_assignment_whitespace_redaction_test: PASS");
 
 const longNonsecretIdentifier = "prefix-".repeat(30_000);
 const identifierRedactionStarted = Date.now();

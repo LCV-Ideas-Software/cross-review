@@ -937,20 +937,33 @@ try {
       0,
       `${engineName} must protect its exclusive empty creation`,
     );
-    assert.equal(fs.statSync(secureEmptyPath).size, 0);
     assert.equal(
       executeWithEngine(getWindowsTokensFileAclVerificationCommand(secureEmptyPath, currentUserSid))
         .status,
       0,
       `${engineName} must create the exact protected DACL before any payload exists`,
     );
-    const emptyBytes = fs.readFileSync(secureEmptyPath);
+    const secureEmptyFd = fs.openSync(secureEmptyPath, "r");
+    try {
+      assert.equal(fs.fstatSync(secureEmptyFd).size, 0);
+      const emptyBytes = fs.readFileSync(secureEmptyFd);
+      assert.equal(emptyBytes.length, 0);
+      assert.equal(
+        executeWithEngine(secureCreation).status,
+        80,
+        "CreateNew must preserve EEXIST semantics",
+      );
+      assert.deepEqual(fs.readFileSync(secureEmptyFd), emptyBytes);
+      assert.equal(fs.fstatSync(secureEmptyFd).size, 0);
+    } finally {
+      fs.closeSync(secureEmptyFd);
+    }
     assert.equal(
-      executeWithEngine(secureCreation).status,
-      80,
-      "CreateNew must preserve EEXIST semantics",
+      executeWithEngine(getWindowsTokensFileAclVerificationCommand(secureEmptyPath, currentUserSid))
+        .status,
+      0,
+      `${engineName} duplicate creation must leave the exact protected DACL unchanged`,
     );
-    assert.deepEqual(fs.readFileSync(secureEmptyPath), emptyBytes);
     fs.rmSync(secureEmptyPath);
     runIcacls([tokenPath, "/reset"]);
     assert.ok(

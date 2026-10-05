@@ -4860,12 +4860,53 @@ export class SessionStore {
             currentCandidate.path,
           );
           if (!absolutePath) return false;
+          let fd: number | undefined;
           try {
-            const existing = fs.statSync(absolutePath);
-            if (!existing.isFile() || existing.size !== item.bytes) return false;
-            return fs.readFileSync(absolutePath).equals(item.persisted);
+            const flags =
+              fs.constants.O_RDONLY |
+              (process.platform !== "win32" && typeof fs.constants.O_NOFOLLOW === "number"
+                ? fs.constants.O_NOFOLLOW
+                : 0) |
+              (process.platform !== "win32" && typeof fs.constants.O_NONBLOCK === "number"
+                ? fs.constants.O_NONBLOCK
+                : 0);
+            fd = fs.openSync(absolutePath, flags);
+            const existing = fs.fstatSync(fd, { bigint: true });
+            if (!existing.isFile() || existing.size !== BigInt(item.bytes)) return false;
+            const stillNamesOpenedFile = () => {
+              const currentPath = fs.lstatSync(absolutePath, { bigint: true });
+              return (
+                currentPath.isFile() &&
+                !currentPath.isSymbolicLink() &&
+                currentPath.dev === existing.dev &&
+                currentPath.ino === existing.ino
+              );
+            };
+            if (!stillNamesOpenedFile()) return false;
+            // Read at most one byte beyond expected custody, even if the same
+            // opened file grows after fstat. Never reopen its checked pathname.
+            const persisted = Buffer.alloc(item.bytes + 1);
+            let readBytes = 0;
+            while (readBytes < persisted.byteLength) {
+              const amount = fs.readSync(
+                fd,
+                persisted,
+                readBytes,
+                persisted.byteLength - readBytes,
+                readBytes,
+              );
+              if (amount === 0) break;
+              readBytes += amount;
+            }
+            return (
+              readBytes === item.bytes &&
+              persisted.subarray(0, readBytes).equals(item.persisted) &&
+              stillNamesOpenedFile()
+            );
           } catch {
             return false;
+          } finally {
+            if (fd !== undefined) fs.closeSync(fd);
           }
         });
         if (duplicate) {

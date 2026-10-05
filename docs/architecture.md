@@ -17,7 +17,6 @@ This API-only `cross-review` implementation is intentionally independent from th
    streaming is enabled.
 8. Reports: writes `session-report.md` with convergence, failures, decision quality, peer-vs-generation cost split, evidence checklist status and recent events.
 9. Observability: writes one NDJSON log per process under `<data_dir>/logs`.
-10. Dashboard: local read-only HTTP UI for sessions, events, reports, probes and metrics.
 
 ## Real Execution Rule
 

@@ -90,7 +90,9 @@ function readyHasBlockingTruthfulnessWarning(peer: PeerResult): boolean {
     Array.isArray(structured.caller_requests) &&
     Array.isArray(structured.follow_ups);
   if (!completeReadyContract) return true;
-  const recoveredDecision = peer.parser_warnings.includes("format_recovery_retry_succeeded");
+  const recoveredDecision =
+    peer.parser_warnings.includes("format_recovery_retry_succeeded") ||
+    peer.parser_warnings.includes("decision_retry_succeeded");
   return peer.parser_warnings.some((warning) => {
     // The orchestrator retains first-attempt diagnostics with this prefix
     // after a separate native recovery call. They remain audit evidence,

@@ -44,7 +44,7 @@ const SECRET_PATTERNS = [
   // when the scorecard hotfix peer responses quoted `id-token: write` in
   // backtick-fenced YAML excerpts. Excluding `\` keeps the regex from
   // crossing JSON-escape boundaries.
-  /(?<![\w-])((?:[a-z0-9]+[_-])*(?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*["']?\s*[:=]\s*["']?)([^\s"',}\\]{6,})/gi,
+  /(?<![\w-])((?:[a-z0-9]+[_-])*(?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*(?:["']\s*)?[:=]\s*["']?)([^\s"',}\\]{6,})/gi,
 ];
 
 const SECRET_FIELD_PATTERN =
@@ -109,8 +109,10 @@ function redactPrivateKeyBlocks(value: string): string {
 // Mask only recognized credential values. Preserve surrounding text and
 // duplicate JSON members; normalizing complete documents would destroy evidence.
 function redactSecretJsonContainers(value: string): string {
+  // Native JSON.stringify escapes a field quote with 0, 1, or 3 backslashes
+  // across zero, one, or two string layers. Higher encodings are not inferred.
   const assignment =
-    /(?<![\w-])((?:[a-z0-9]+[_-])*(?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*(?:\\?["'])?\s*[:=]\s*)(\[|\{)/gi;
+    /(?<![\w-])((?:[a-z0-9]+[_-])*(?:password|passwd|api[_-]?key|secret|token|access[_-]?key|auth(?:orization)?|bearer|private[_-]?key)\s*(?:((?:\\{3}|\\)?["'])\s*)?[:=]\s*)((?:\\{3}|\\)?"|\[|\{)/gi;
   let quotedContext = false;
   let encodedContext = false;
   let significant: string | undefined;
@@ -140,7 +142,25 @@ function redactSecretJsonContainers(value: string): string {
       }
     }
   };
-  const quotedTailEnd = (start: number): number => {
+  const readEncodedUnit = (index: number): { char: string | undefined; next: number } => {
+    if (value[index] !== "\\") return { char: value[index], next: index + 1 };
+    const next = Math.min(value.length, index + (value[index + 1] === "u" ? 6 : 2));
+    return { char: JSON.parse('"' + value.slice(index, next) + '"') as string, next };
+  };
+  const quotedTailEnd = (start: number, doubleEncoded: boolean): number => {
+    if (doubleEncoded) {
+      let index = start;
+      while (index < value.length) {
+        try {
+          const unit = readEncodedUnit(index);
+          if (unit.char === '"') return index;
+          index = unit.char === "\\" ? readEncodedUnit(unit.next).next : unit.next;
+        } catch {
+          start = index;
+          break;
+        }
+      }
+    }
     for (let index = start; index < value.length; index += 1) {
       if (value[index] === "\\") index += 1;
       else if (value[index] === '"') return index;
@@ -152,15 +172,33 @@ function redactSecretJsonContainers(value: string): string {
   while (true) {
     const match = assignment.exec(value);
     if (!match) break;
-    const start = assignment.lastIndex - 1;
+    const opener = match[3] ?? "";
+    const scalar = opener.endsWith('"');
+    const fieldQuote = match[2] ?? "";
+    // Encoded scalars require a recognized JSON field and matching native
+    // quote escapes. Raw scalars retain the env rule, including short values
+    // such as the ordinary workflow permission "id-token":"write".
+    if (
+      scalar &&
+      (!fieldQuote.startsWith("\\") ||
+        !fieldQuote.endsWith('"') ||
+        !(match[1] ?? "").trimEnd().endsWith(":") ||
+        opener !== fieldQuote ||
+        value.slice(match.index - fieldQuote.length, match.index) !== fieldQuote)
+    ) {
+      continue;
+    }
+    const start = assignment.lastIndex - opener.length;
     advanceContext(start);
     const withinString = quotedContext;
-    const encodedString = withinString && encodedContext;
+    const encodedField = withinString && fieldQuote.startsWith("\\");
+    const doubleEncoded = encodedField && fieldQuote.length === 4;
+    const encodedString = withinString && (encodedContext || encodedField);
     const closing: string[] = [];
     let quote: string | undefined;
     let containerEscape = false;
     let end = value.length;
-    let index = start;
+    let index = scalar ? assignment.lastIndex : start;
     while (index < value.length) {
       let char = value[index];
       let next = index + 1;
@@ -169,16 +207,42 @@ function redactSecretJsonContainers(value: string): string {
         break;
       }
       if (encodedString && char === "\\") {
-        // Decode only one fixed-size JSON escape, never an object/document.
-        next = Math.min(value.length, index + (value[index + 1] === "u" ? 6 : 2));
+        // Decode at most two fixed-size native JSON escapes, never a
+        // document or recursively serialized provider response.
         try {
-          char = JSON.parse(`"${value.slice(index, next)}"`) as string;
+          const unit = readEncodedUnit(index);
+          char = unit.char;
+          next = unit.next;
+          if (doubleEncoded && char === '"') {
+            end = index;
+            break;
+          }
+          if (doubleEncoded && char === "\\") {
+            const escaped = readEncodedUnit(next);
+            let jsonEscape = "\\" + escaped.char;
+            next = escaped.next;
+            if (escaped.char === "u") {
+              for (let digit = 0; digit < 4; digit += 1) {
+                const hex = readEncodedUnit(next);
+                jsonEscape += hex.char;
+                next = hex.next;
+              }
+            }
+            char = JSON.parse('"' + jsonEscape + '"') as string;
+          }
         } catch {
-          end = encodedString ? quotedTailEnd(index) : value.length;
+          end = quotedTailEnd(index, doubleEncoded);
           break;
         }
       }
-      if (quote) {
+      if (scalar) {
+        if (containerEscape) containerEscape = false;
+        else if (char === "\\") containerEscape = true;
+        else if (char === '"') {
+          end = next;
+          break;
+        }
+      } else if (quote) {
         if (containerEscape) containerEscape = false;
         else if (char === "\\") containerEscape = true;
         else if (char === quote) quote = undefined;
@@ -188,7 +252,7 @@ function redactSecretJsonContainers(value: string): string {
         closing.push(char === "[" ? "]" : "}");
       } else if (char === "]" || char === "}") {
         if (closing.pop() !== char) {
-          end = encodedString ? quotedTailEnd(next) : value.length;
+          end = encodedString ? quotedTailEnd(next, doubleEncoded) : value.length;
           break;
         }
         if (closing.length === 0) {
@@ -198,10 +262,28 @@ function redactSecretJsonContainers(value: string): string {
       }
       index = next;
     }
+    // GitHub's exact OIDC permission vocabulary is not an issued JWT.
+    // Preserve only its two native scalar literals, with the original bytes.
+    if (
+      scalar &&
+      (match[1] ?? "").startsWith("id-token" + fieldQuote) &&
+      end - start <= fieldQuote.length * 2 + 5 &&
+      [fieldQuote + "write" + fieldQuote, fieldQuote + "none" + fieldQuote].includes(
+        value.slice(start, end),
+      )
+    ) {
+      advanceContext(end);
+      assignment.lastIndex = end;
+      continue;
+    }
     // An unterminated matched value loses its remaining tail, rather than
     // allowing a credential suffix to survive. Keep an enclosing string quote.
-    const encodedField = encodedString && /\\["']\s*[:=]\s*$/.test(match[1] ?? "");
-    const marker = encodedField ? '\\"[REDACTED]\\"' : withinString ? "[REDACTED]" : '"[REDACTED]"';
+    let marker = encodedField
+      ? '\\"[REDACTED]\\"'
+      : withinString && !scalar
+        ? "[REDACTED]"
+        : '"[REDACTED]"';
+    if (doubleEncoded) marker = JSON.stringify(marker).slice(1, -1);
     parts.push(value.slice(cursor, start), marker);
     cursor = end;
     advanceContext(end);
@@ -241,7 +323,10 @@ export function redactJsonValue<T>(value: T): T {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, child]) => [
         key,
-        SECRET_FIELD_PATTERN.test(key) ? "[REDACTED]" : redactJsonValue(child),
+        SECRET_FIELD_PATTERN.test(key) &&
+        !(key === "id-token" && (child === "write" || child === "none"))
+          ? "[REDACTED]"
+          : redactJsonValue(child),
       ]),
     ) as T;
   }

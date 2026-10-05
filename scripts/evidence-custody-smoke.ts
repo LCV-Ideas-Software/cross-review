@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -71,6 +72,194 @@ assert.deepEqual(attachedEvent.data, {
   origin: "caller_submitted",
   authority_status: "caller_submitted_unverified",
 });
+
+// Historical deduplication must check and read one native file descriptor.
+// A local replacement or growth must not bypass the custody size/read bound.
+for (const scenario of [
+  "intact",
+  "short-reads",
+  "same-size-corruption",
+  "rename-after-check",
+  "growth-after-check",
+] as const) {
+  const dedupeSession = await store.init(`Historical custody: ${scenario}`, "codex", []);
+  const proof = "SYNTHETIC_COMPLETE_CUSTODY_BYTES_71b0ca";
+  const params = {
+    submitted_by: "codex" as const,
+    artifact_text: "Synthetic source artifact for custody verification",
+    items: [{ label: "caller-structured-evidence", content: proof }],
+  };
+  const original = await store.attachCallerEvidenceSubmission(dedupeSession.session_id, params);
+  const originalPath = original.submission.attachment_paths[0];
+  assert.ok(originalPath);
+  const originalFile = path.join(store.sessionDir(dedupeSession.session_id), originalPath);
+  const preservedFile = `${originalFile}.preserved`;
+  const replacementFile = `${originalFile}.replacement`;
+  const proofBytes = Buffer.byteLength(proof, "utf8");
+  if (scenario === "same-size-corruption") {
+    fs.writeFileSync(originalFile, Buffer.alloc(proofBytes, 0x58));
+  } else if (scenario === "rename-after-check") {
+    fs.writeFileSync(replacementFile, Buffer.alloc(2_000_000, 0x58));
+  }
+  const nativeStat = fs.statSync;
+  const nativeFstat = fs.fstatSync;
+  const nativeOpen = fs.openSync;
+  const nativeReadFile = fs.readFileSync;
+  const nativeRead = fs.readSync;
+  const nativeClose = fs.closeSync;
+  let candidateFd: number | undefined;
+  let fdClosed = false;
+  let changed = false;
+  let readBytes = 0;
+  let largestReadRequest = 0;
+  let readingWholeFile = false;
+  const replaceAfterCheck = () => {
+    if (scenario !== "rename-after-check" || changed) return;
+    changed = true;
+    fs.renameSync(originalFile, preservedFile);
+    fs.renameSync(replacementFile, originalFile);
+  };
+  const growBeforeRead = () => {
+    if (scenario !== "growth-after-check" || changed) return;
+    changed = true;
+    fs.writeFileSync(originalFile, Buffer.alloc(2_000_000, 0x58));
+  };
+  fs.statSync = ((file: fs.PathLike, options?: fs.StatOptions) => {
+    const existing = nativeStat(file, options as never);
+    if (file === originalFile) replaceAfterCheck();
+    return existing;
+  }) as typeof fs.statSync;
+  fs.openSync = (file, flags, mode) => {
+    const fd = nativeOpen(file, flags, mode);
+    if (file === originalFile && candidateFd === undefined) candidateFd = fd;
+    return fd;
+  };
+  fs.fstatSync = ((fd: number, options?: fs.StatOptions) => {
+    const existing = nativeFstat(fd, options as never);
+    if (fd === candidateFd) replaceAfterCheck();
+    return existing;
+  }) as typeof fs.fstatSync;
+  fs.readFileSync = ((file: fs.PathOrFileDescriptor, options?: unknown) => {
+    const candidate = file === originalFile || file === candidateFd;
+    if (candidate) growBeforeRead();
+    const previous = readingWholeFile;
+    readingWholeFile = true;
+    try {
+      const value = nativeReadFile(file, options as never);
+      if (candidate) readBytes += Buffer.byteLength(value);
+      return value;
+    } finally {
+      readingWholeFile = previous;
+    }
+  }) as typeof fs.readFileSync;
+  fs.readSync = ((
+    fd: number,
+    buffer: NodeJS.ArrayBufferView,
+    offset: number,
+    length: number,
+    position: number | null,
+  ) => {
+    if (fd === candidateFd) {
+      growBeforeRead();
+      if (!readingWholeFile) largestReadRequest = Math.max(largestReadRequest, length);
+    }
+    const amount = nativeRead(
+      fd,
+      buffer,
+      offset,
+      scenario === "short-reads" && fd === candidateFd ? Math.min(length, 5) : length,
+      position,
+    );
+    if (fd === candidateFd && !readingWholeFile) readBytes += amount;
+    return amount;
+  }) as typeof fs.readSync;
+  fs.closeSync = (fd) => {
+    nativeClose(fd);
+    if (fd === candidateFd) fdClosed = true;
+  };
+  let repeated: Awaited<ReturnType<typeof store.attachCallerEvidenceSubmission>>;
+  try {
+    repeated = await store.attachCallerEvidenceSubmission(dedupeSession.session_id, params);
+  } finally {
+    fs.statSync = nativeStat;
+    fs.fstatSync = nativeFstat;
+    fs.openSync = nativeOpen;
+    fs.readFileSync = nativeReadFile;
+    fs.readSync = nativeRead;
+    fs.closeSync = nativeClose;
+  }
+  const intact = scenario === "intact" || scenario === "short-reads";
+  assert.equal(
+    repeated.submission.attachment_paths[0] === originalPath,
+    intact,
+    `${scenario}: only exact current file bytes may reuse historical custody`,
+  );
+  assert.ok(readBytes <= proofBytes + 1, `${scenario}: reading must remain bounded by custody`);
+  assert.ok(largestReadRequest <= proofBytes + 1);
+  assert.ok(candidateFd !== undefined && fdClosed, `${scenario}: native descriptor must close`);
+  if (scenario === "rename-after-check") {
+    assert.equal(changed, true);
+    assert.equal(fs.readFileSync(preservedFile, "utf8"), proof);
+    assert.equal(fs.statSync(originalFile).size, 2_000_000);
+  } else if (scenario === "growth-after-check") {
+    assert.equal(changed, true);
+    assert.equal(readBytes, proofBytes + 1, "growth must stop at the first unexpected byte");
+    assert.equal(fs.statSync(originalFile).size, 2_000_000);
+  }
+  assert.equal(repeated.meta.evidence_files?.length, intact ? 1 : 2);
+  const active = store.readEvidenceAttachments(dedupeSession.session_id, 200_000);
+  assert.equal(active.length, 1);
+  assert.equal(active[0]?.content, proof);
+  assert.equal(active[0]?.provenance_status, "verified");
+  assert.equal(active[0]?.authority_status, "caller_submitted_unverified");
+  assert.equal(store.read(dedupeSession.session_id).in_flight, undefined);
+}
+
+// Opening a replaced FIFO must not wait for a writer before fstat rejects it.
+// Run the native POSIX fixture in a bounded child so a regression cannot hang.
+if (process.platform !== "win32") {
+  const fifoSession = await store.init("Historical custody replaced with FIFO", "codex", []);
+  const params = {
+    submitted_by: "codex" as const,
+    artifact_text: "Synthetic FIFO custody fixture",
+    items: [{ label: "caller-structured-evidence", content: "SYNTHETIC_FIFO_PROOF_71b0ca" }],
+  };
+  const original = await store.attachCallerEvidenceSubmission(fifoSession.session_id, params);
+  const originalPath = original.submission.attachment_paths[0];
+  assert.ok(originalPath);
+  const originalFile = path.join(store.sessionDir(fifoSession.session_id), originalPath);
+  fs.unlinkSync(originalFile);
+  const creation = spawnSync("mkfifo", [originalFile], { encoding: "utf8", timeout: 5_000 });
+  assert.equal(creation.status, 0, creation.stderr || String(creation.error));
+  assert.equal(fs.lstatSync(originalFile).isFIFO(), true);
+  const childSource = [
+    `import { loadConfig } from ${JSON.stringify(new URL("../src/core/config.ts", import.meta.url).href)};`,
+    `import { SessionStore } from ${JSON.stringify(new URL("../src/core/session-store.ts", import.meta.url).href)};`,
+    `const store = new SessionStore({ ...loadConfig(), data_dir: ${JSON.stringify(dataDir)} });`,
+    `const result = await store.attachCallerEvidenceSubmission(${JSON.stringify(fifoSession.session_id)}, ${JSON.stringify(params)});`,
+    "console.log(JSON.stringify({ attachment_paths: result.submission.attachment_paths, in_flight: Boolean(result.meta.in_flight) }));",
+  ].join("\n");
+  const child = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", childSource],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.equal(child.error, undefined, "native FIFO rejection must finish without timeout");
+  assert.equal(child.status, 0, child.stderr);
+  const result = JSON.parse(child.stdout.trim()) as {
+    attachment_paths: string[];
+    in_flight: boolean;
+  };
+  assert.notEqual(result.attachment_paths[0], originalPath);
+  assert.equal(result.in_flight, false);
+  assert.equal(fs.lstatSync(originalFile).isFIFO(), true, "rejected history must remain intact");
+  assert.equal(
+    store.readEvidenceAttachments(fifoSession.session_id, 200_000)[0]?.content,
+    params.items[0]?.content,
+  );
+} else {
+  console.log("[smoke] historical FIFO control: SKIP (POSIX native fixture)");
+}
 
 // Regression contract: attachment paths must remain unique even when several
 // submissions with the same label are created during the exact same clock
