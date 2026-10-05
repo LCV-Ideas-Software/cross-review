@@ -6,7 +6,7 @@
 > reader; sections 4 to 7 go deeper into the technical aspects for IT
 > professionals and developers.
 >
-> State of the source/release target on 04/10/2026: `10.0.0`. The registry may
+> State of the source/release target on 05/10/2026: `10.0.1`. The registry may
 > lag behind the source during the workflow; check `npm view
 @lcv-ideas-software/cross-review version` for the publication and `server_info`
 > for the runtime version actually loaded. Reload the window after a package

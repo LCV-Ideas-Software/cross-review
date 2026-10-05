@@ -41,8 +41,8 @@ The product is stable. The reference source/release target reports:
 | ------------------------------ | ---------------------------------- |
 | Name                           | `cross-review`                     |
 | Publisher                      | `LCV Ideas & Software`             |
-| Version prepared by the source | `v10.00.00`                        |
-| Source/release target date     | `04/10/2026`                       |
+| Version prepared by the source | `v10.00.01`                        |
+| Source/release target date     | `05/10/2026`                       |
 | npm package                    | `@lcv-ideas-software/cross-review` |
 | MCP transport                  | `stdio`                            |
 | Peer CLI execution             | disabled                           |
@@ -814,7 +814,7 @@ provenance and create the Release last, with the run's own token.
 
 ## Brief changelog
 
-The v10.00.00 source target preserves the Grok 4.7 pin and parses typed
+The v10.00.01 source target preserves the Grok 4.7 pin and parses typed
 assistant output without exposing encrypted reasoning as review text.
 
 | Version          | Date          | Highlight                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |

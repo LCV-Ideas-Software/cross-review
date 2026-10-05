@@ -9,6 +9,8 @@
 // network/timeout/stream_buffer_overflow/unknown failure classes and
 // interrupted-attempt records stamped with the
 // `possible_provider_attempt_interrupted` message sentinel.
+// An accepted background run with a local retrieval deadline is not a
+// terminal provider rejection, even when cancellation was acknowledged.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -31,7 +33,9 @@ import type {
   PeerResult,
 } from "../src/core/types.js";
 import { classifyProviderError } from "../src/peers/errors.js";
+import { PerplexityAdapter } from "../src/peers/perplexity.js";
 import { withRetry } from "../src/peers/retry.js";
+import { StubAdapter } from "../src/peers/stub.js";
 
 process.env.CROSS_REVIEW_STUB = "1";
 const previousStubConfirmation = process.env.CROSS_REVIEW_STUB_CONFIRMED;
@@ -80,6 +84,97 @@ function terminalCapacityFailure(): PeerFailure {
   };
 }
 
+function backgroundTimeoutFixture(
+  label: string,
+  retrievalStatus: 429 | 503,
+  modelOverride?: string,
+) {
+  const config = fixtureConfig(label);
+  config.retry = {
+    ...config.retry,
+    timeout_ms: 1_500,
+    max_attempts: 3,
+    base_delay_ms: 1,
+    max_delay_ms: 1,
+  };
+  const adapter = new PerplexityAdapter(config, modelOverride);
+  const responseId = "resp_spend_settlement_fixture";
+  let creates = 0;
+  const getPaths: string[] = [];
+  const cancelPaths: string[] = [];
+  Object.defineProperty(adapter, "client", {
+    value: async () => ({
+      responses: {
+        create: async () => {
+          creates += 1;
+          return { id: responseId, status: "queued", usage: null };
+        },
+      },
+      get: async (requestPath: string) => {
+        getPaths.push(requestPath);
+        throw Object.assign(
+          new Error(retrievalStatus === 429 ? "429 Too Many Requests" : "503 Service Unavailable"),
+          { status: retrievalStatus },
+        );
+      },
+      post: async (requestPath: string) => {
+        cancelPaths.push(requestPath);
+        return { response_id: responseId, status: "cancelling" };
+      },
+    }),
+  });
+  return {
+    config,
+    adapter,
+    responseId,
+    getPaths,
+    cancelPaths,
+    creates: () => creates,
+  };
+}
+
+function assertBackgroundTimeoutFixture(fixture: ReturnType<typeof backgroundTimeoutFixture>) {
+  assert.equal(fixture.creates(), 1, "the timeout must not recreate an accepted background run");
+  assert.ok(fixture.getPaths.length > 0, "the fixture must exercise a transient retrieval failure");
+  assert.ok(
+    fixture.getPaths.every((requestPath) => requestPath === `/agent/${fixture.responseId}`),
+  );
+  assert.deepEqual(fixture.cancelPaths, [`/agent/${fixture.responseId}/cancel`]);
+}
+
+async function backgroundTimeoutFailure(
+  label: string,
+  retrievalStatus: 429 | 503,
+): Promise<PeerFailure> {
+  const fixture = backgroundTimeoutFixture(label, retrievalStatus);
+  let failure: PeerFailure | undefined;
+  await assert.rejects(
+    () =>
+      fixture.adapter.call("fixture background review", {
+        session_id: "550e8400-e29b-41d4-a716-446655440296",
+        round: 1,
+        task: "background timeout spend settlement",
+        stream_tokens: false,
+        emit: () => {},
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /perplexity_background_poll_timeout/);
+      failure = (error as Error & { peerFailure?: PeerFailure }).peerFailure;
+      assert.ok(failure, "the real adapter must preserve its classified failure");
+      return true;
+    },
+  );
+  assert.ok(failure);
+  assertBackgroundTimeoutFixture(fixture);
+  assert.ok(failure.message.includes(String(retrievalStatus)));
+  assert.equal(failure.safe_to_repeat, false);
+  assert.equal(failure.billing_status, "unknown");
+  assert.equal(failure.usage, undefined);
+  assert.equal(failure.cost, undefined);
+  return failure;
+}
+
 interface GenerationHarness {
   orchestrator: CrossReviewOrchestrator;
   sessionId: string;
@@ -118,6 +213,75 @@ async function runGeneration(harness: GenerationHarness): Promise<void> {
   );
 }
 
+async function reopenedBackgroundFailure(label: string, priced = false) {
+  const config = fixtureConfig(label);
+  const previous = new CrossReviewOrchestrator(config, () => {});
+  const session = await previous.store.init(`v4.5.41 ${label}`, "codex", []);
+  await previous.store.appendEvidenceChecklistItems(session.session_id, 1, [
+    { peer: "gemini", ask: "Provide exact raw test output." },
+  ]);
+  // Preserve the 10.0.0 classifier's stored zero marker. Upgrading must
+  // interpret its explicit unsafe-to-repeat evidence without rewriting it.
+  const failure: PeerFailure = {
+    peer: "perplexity",
+    provider: "perplexity",
+    model: config.models.perplexity,
+    failure_class: "provider_error",
+    message: "perplexity_background_poll_timeout: fixture response remained in_progress.",
+    retryable: false,
+    attempts: 1,
+    latency_ms: 1_500,
+    billing_status: priced ? "reported" : "unknown",
+    unpriced_attempts: priced ? 0 : 1,
+    indeterminate_spend_attempts: 0,
+    safe_to_repeat: false,
+    ...(priced
+      ? {
+          usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+          cost: {
+            currency: "USD" as const,
+            estimated: false,
+            source: "configured-rate" as const,
+            total_cost: 0.2,
+          },
+        }
+      : {}),
+  };
+  const artifact = await previous.store.recordPeerFailureAccounting(
+    session.session_id,
+    1,
+    failure,
+    "legacy-background-timeout",
+  );
+  const meta = previous.store.read(session.session_id);
+  meta.version = "10.0.0";
+  fs.writeFileSync(previous.store.metaPath(session.session_id), JSON.stringify(meta), "utf8");
+  const artifactPath = path.join(previous.store.sessionDir(session.session_id), artifact);
+  const originalBytes = fs.readFileSync(artifactPath);
+  const originalRecord = JSON.stringify(meta.failed_attempts?.[0]);
+  const orchestrator = new CrossReviewOrchestrator(config, () => {});
+  let calls = 0;
+  const adapter: PeerAdapter = {
+    ...orchestrator.adapters.claude,
+    generate: async (): Promise<GenerationResult> => {
+      calls += 1;
+      throw new Error("generation_dispatched_past_preflight");
+    },
+  };
+  return {
+    orchestrator,
+    sessionId: session.session_id,
+    adapter,
+    calls: () => calls,
+    assertOriginal: () => {
+      assert.deepEqual(fs.readFileSync(artifactPath), originalBytes);
+      const reopened = orchestrator.store.read(session.session_id);
+      assert.equal(reopened.version, "10.0.0");
+      assert.equal(JSON.stringify(reopened.failed_attempts?.[0]), originalRecord);
+    },
+  };
+}
+
 function judgment(peer: PeerId = "claude"): EvidenceAskJudgment {
   return {
     peer,
@@ -138,6 +302,43 @@ function judgment(peer: PeerId = "claude"): EvidenceAskJudgment {
 type Regression = { name: string; run: () => void | Promise<void> };
 
 const regressions: Regression[] = [
+  ...(["generation", "judge"] as const).map<Regression>((gate) => ({
+    name: `reopened-v10-background-failure-blocks-${gate}-without-rewriting-history`,
+    run: async () => {
+      const harness = await reopenedBackgroundFailure(`legacy-background-${gate}`);
+      let judgeCalls = 0;
+      harness.orchestrator.adapters.claude.judgeEvidenceAsk = async () => {
+        judgeCalls += 1;
+        return judgment();
+      };
+      harness.assertOriginal();
+      if (gate === "generation") {
+        await assert.rejects(() => runGeneration(harness), /generation_budget_preflight/);
+      } else {
+        await assert.rejects(
+          () =>
+            harness.orchestrator.runEvidenceChecklistJudgePass({
+              session_id: harness.sessionId,
+              judge_peer: "claude",
+              draft: "fixture draft",
+            }),
+          /evidence_judge_budget_preflight/,
+        );
+      }
+      assert.equal(harness.calls(), 0);
+      assert.equal(judgeCalls, 0);
+      harness.assertOriginal();
+    },
+  })),
+  {
+    name: "fully-priced-unsafe-to-repeat-failure-does-not-block-generation",
+    run: async () => {
+      const harness = await reopenedBackgroundFailure("priced-unsafe-repeat", true);
+      await assert.rejects(() => runGeneration(harness), /generation_dispatched_past_preflight/);
+      assert.equal(harness.calls(), 1);
+      harness.assertOriginal();
+    },
+  },
   {
     name: "terminal-provider-error-without-usage-settles-as-zero-and-generation-proceeds",
     run: async () => {
@@ -156,6 +357,154 @@ const regressions: Regression[] = [
       );
     },
   },
+  {
+    name: "perplexity-background-timeout-after-429-blocks-generation-without-recreating",
+    run: async () => {
+      const harness = await generationHarness("background-generation-blocks");
+      const failure = await backgroundTimeoutFailure("background-generation-failure", 429);
+      await harness.orchestrator.store.recordPeerFailureAccounting(
+        harness.sessionId,
+        1,
+        failure,
+        "background-timeout",
+      );
+      await assert.rejects(() => runGeneration(harness), /generation_budget_preflight/);
+      assert.equal(harness.calls(), 0, "unknown background spend must block paid generation");
+    },
+  },
+  {
+    name: "perplexity-background-timeout-after-503-blocks-evidence-judge-without-recreating",
+    run: async () => {
+      const orchestrator = new CrossReviewOrchestrator(
+        fixtureConfig("background-judge-blocks"),
+        () => {},
+      );
+      const session = await orchestrator.store.init("v4.5.41 background-judge-blocks", "codex", []);
+      await orchestrator.store.appendEvidenceChecklistItems(session.session_id, 1, [
+        { peer: "gemini", ask: "Provide exact raw test output." },
+      ]);
+      const failure = await backgroundTimeoutFailure("background-judge-failure", 503);
+      await orchestrator.store.recordPeerFailureAccounting(
+        session.session_id,
+        1,
+        failure,
+        "background-timeout",
+      );
+      let calls = 0;
+      orchestrator.adapters.claude.judgeEvidenceAsk = async () => {
+        calls += 1;
+        return judgment();
+      };
+      await assert.rejects(
+        () =>
+          orchestrator.runEvidenceChecklistJudgePass({
+            session_id: session.session_id,
+            judge_peer: "claude",
+            draft: "fixture draft",
+          }),
+        /evidence_judge_budget_preflight/,
+      );
+      assert.equal(calls, 0, "unknown background spend must block paid evidence judgment");
+    },
+  },
+  ...[false, true].map<Regression>((afterPrimaryRejection) => ({
+    name: afterPrimaryRejection
+      ? "perplexity-background-timeout-in-first-fallback-stops-the-fallback-chain"
+      : "perplexity-background-timeout-does-not-dispatch-a-configured-model-fallback",
+    run: async () => {
+      const fixture = backgroundTimeoutFixture(
+        `background-fallback-blocks-${afterPrimaryRejection}`,
+        429,
+        afterPrimaryRejection ? "perplexity/fixture-first-fallback" : undefined,
+      );
+      const config = fixture.config;
+      const fallbackModel = "perplexity/fixture-fallback";
+      config.fallback_models = {
+        ...config.fallback_models,
+        perplexity: afterPrimaryRejection
+          ? [fixture.adapter.model, fallbackModel]
+          : [fallbackModel],
+      };
+      const rate = { input_per_million: 0, output_per_million: 0, search_queries_per_1000: 0 };
+      config.model_cost_rates = {
+        ...config.model_cost_rates,
+        perplexity: {
+          ...config.model_cost_rates?.perplexity,
+          [fixture.adapter.model]: rate,
+          [fallbackModel]: rate,
+        },
+      };
+      const primary: PeerAdapter = afterPrimaryRejection
+        ? new StubAdapter(config, "perplexity")
+        : fixture.adapter;
+      if (afterPrimaryRejection) {
+        primary.call = async () => {
+          throw Object.assign(new Error("503 Service Unavailable: rejected before generation"), {
+            status: 503,
+          });
+        };
+      }
+      const adapters = Object.fromEntries(
+        (Object.keys(config.peer_enabled) as PeerId[]).map((peer) => [
+          peer,
+          peer === "perplexity" ? primary : new StubAdapter(config, peer),
+        ]),
+      ) as Record<PeerId, PeerAdapter>;
+      const fallback = new StubAdapter(config, "perplexity", fallbackModel);
+      const fallbackCall = fallback.call.bind(fallback);
+      let fallbackCalls = 0;
+      fallback.call = async (prompt, context) => {
+        fallbackCalls += 1;
+        return fallbackCall(prompt, context);
+      };
+      const orchestrator = new CrossReviewOrchestrator(
+        config,
+        () => {},
+        (_config, overrides) =>
+          overrides?.perplexity
+            ? {
+                ...adapters,
+                perplexity:
+                  overrides.perplexity === fixture.adapter.model ? fixture.adapter : fallback,
+              }
+            : adapters,
+      );
+      const session = await orchestrator.store.init(
+        "v4.5.41 background-fallback-blocks",
+        "codex",
+        [],
+      );
+      const review = orchestrator as unknown as {
+        callPeerForReview(
+          adapter: PeerAdapter,
+          prompt: string,
+          moderationSafePrompt: string,
+          context: Parameters<PeerAdapter["call"]>[1],
+        ): Promise<{ result?: PeerResult; failure?: PeerFailure }>;
+      };
+      const outcome = await review.callPeerForReview(primary, "fixture", "fixture", {
+        session_id: session.session_id,
+        round: 1,
+        task: "background timeout fallback admission",
+        stream_tokens: false,
+        emit: () => {},
+      });
+      assertBackgroundTimeoutFixture(fixture);
+      assert.equal(
+        fallbackCalls,
+        0,
+        "an abandoned background run must not open another model call",
+      );
+      assert.equal(outcome.result, undefined);
+      assert.equal(outcome.failure?.safe_to_repeat, false);
+      assert.equal(outcome.failure?.indeterminate_spend_attempts, 1);
+      assert.equal(
+        orchestrator.store.read(session.session_id).fallback_events?.length ?? 0,
+        afterPrimaryRejection ? 1 : 0,
+        "only the completed primary rejection may admit a fallback",
+      );
+    },
+  })),
   {
     name: "priced-result-with-unpriced-terminal-retry-does-not-block-generation",
     run: async () => {
