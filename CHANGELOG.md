@@ -7,6 +7,12 @@ standard `v00.00.00`; npm package versions remain SemVer.
 
 ## [Unreleased]
 
+### Changed
+
+- Update the official Linear Release Action to v0.18.1 at its full commit SHA,
+  select the official CLI v0.18.0 explicitly and retain upstream checksum
+  verification (LCV-316).
+
 ## [v10.00.01] — 05/10/2026
 
 ### Fixed
